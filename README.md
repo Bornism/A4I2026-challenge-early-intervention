@@ -55,6 +55,8 @@ You will build it for **one state**, chosen by your team a few sections down.
 
 Every team shares the same spine: one BigQuery Property Graph (`a4i_early_intervention.ReferralGraph`) declared in ISO GQL, variable-length `-{2,4}->` path traversals, census-tract neighborhood context, and an ADK triage agent. **What changes between tracks is the coordinator's question, not the graph.**
 
+**These are starting points, not a cage.** Pick one, combine two, or define a sharper IDEA Part C early-childhood triage workflow in the same vein if you can defend why it matters.
+
 | Track | What arrives | Primary user action | What makes it hard |
 |---|---|---|---|
 | 🧭 **Today's toddler referral** | A 20-month-old from a specific census tract needs Medicaid-accepted, Spanish-bilingual speech/autism evaluation under the 45-day clock | Intake coordinator routing an active case | Avoiding routing through historically bouncing edges while respecting travel distance (`ST_DISTANCE`), Medicaid acceptance, and bilingual availability |
@@ -127,6 +129,8 @@ Write down your state, your track, and your scenario before writing code:
 | **At least one tool you built** | A Python function tool or custom MCP Toolbox tool executing multi-hop ISO GQL `GRAPH` queries |
 | **Deployed to Google Cloud** | Live service running on **Agent Runtime** or **Cloud Run** |
 
+**Also already set up for you, and worth ten seconds now rather than later: Antigravity.** Your Google Skills lab environment includes a button that launches the **Antigravity IDE**, and the **Antigravity CLI** is one word away in Cloud Shell (`agy`). Neither is required, and nothing here depends on them, so do not lose time fighting one if it is not helping, though we strongly recommend using at least one because every lane has tedious boilerplate a coding agent will happily absorb. [Details in Step 3](#strongly-recommended-antigravity-the-ide-and-the-cli).
+
 ### Choosing your MCP server
 
 Use **BigQuery's built-in MCP server** or **[MCP Toolbox for Databases](https://github.com/googleapis/mcp-toolbox)** (if deploying Toolbox on Cloud Run, set `--min-instances=1` to eliminate cold starts during your recorded walkthrough).
@@ -169,11 +173,20 @@ Why a property graph is essential here rather than decorative:
 
 #### Front end lane (2 people)
 
-Start on `adk web`, then decide deliberately between **Gemini Enterprise** (natural fit for an internal regional Part C coordinator) or a **custom web UI** that **visually renders the multi-hop referral path and cumulative day clock** rather than describing hops in prose alone.
+Three routes. **Pick deliberately and be ready to say why**, because your interface choice tells judges who you think the user is.
+
+| Option | Strength | Trade-off |
+|---|---|---|
+| **`adk web`** | Fastest. Built in, works immediately, and where you should start | Developer tool look and feel. Fine while building, weak as a final product story unless justified |
+| **Gemini Enterprise** | Clean internal staff UX over Agent Runtime with minimal front-end code | Serves **internal** staff rather than the public (which fits a regional IDEA Part C coordinator persona well if stated on purpose) |
+| **Custom web UI** | Full control: visually rendering the multi-hop referral path and cumulative 45-day clock beats prose alone | Most work by far. Scope tightly so it finishes on time |
+
+- **Do not wait for a working agent.** Mock the response schema now, build against it, and swap in the live endpoint once the agent lane deploys.
+- **Whatever you build, the recorded demo runs on it.** Test it end to end before recording.
 
 #### Story lane (1 to 2 people, starting at minute zero)
 
-Upload **four required artifacts** to `https://portal.angelhack.com/a4i-console` before deadline:
+Upload **four required artifacts** to https://portal.angelhack.com/a4i-console before deadline:
 
 1. **Public GitHub repository link**
 2. **Google Skills project link** (with live deployed agent)
@@ -194,22 +207,91 @@ Your agent should produce a concrete brief an Early Intervention coordinator can
 
 ### Step 1: Create the team repository
 
-Click **Use this template** -> **Create a new repository** (**Public**) and add your teammates under **Settings -> Collaborators**.
+**Repo owner only.**
+
+1. At the top of this page, click the green **Use this template** button -> **Create a new repository**. *(No button? Use **Fork** and tell a coach.)*
+2. Name it after your team, choose **Public**, and click **Create repository**.
+3. Go to **Settings -> Collaborators** and add every teammate's GitHub username.
+4. Paste the repo URL where everyone on your team can see it.
 
 ### Step 2: Get into your Google Cloud project
 
-Open your shared Google Skills project. Remember that reservation assignment (`a4i-graph`) applies at the project level (`region-us`) and takes roughly 60 seconds after creation to take effect.
+Follow your facilitator's instructions to open your shared Google Skills project. **There is one project per team.** You all share Owner access and see the same BigQuery datasets. Remember that reservation assignment (`a4i-graph`) applies at the project level (`region-us`) and takes roughly 60 seconds after creation to propagate.
 
-### Step 3: Everyone: get into Cloud Shell or Antigravity
+### Step 3: Everyone: get into Cloud Shell
 
-Open Cloud Shell (`>_`) or the **Antigravity IDE / `agy` CLI**, clone your team repository, and create lane branches (`data`, `agent`, `frontend`, `story`).
+**Cloud Shell is where you will work** (alongside your preconfigured Antigravity workstation if provided at your venue). It already has `gcloud`, `bq`, Python, Node, `git`, Docker, and the Antigravity CLI (`agy`) installed.
+
+1. In the Google Cloud console, click the **terminal icon (`>_`) in the top right** so Cloud Shell opens attached to *this* project and browser session.
+2. Clone your team's repository and enter it:
+
+   ```bash
+   git clone https://github.com/YOUR-TEAM/YOUR-REPO.git
+   cd YOUR-REPO
+   ```
+
+3. Open the repository as a workspace in Cloud Shell Editor:
+
+   ```bash
+   cloudshell workspace .
+   ```
+
+#### One repo, one branch per lane
+
+Eight to ten people committing straight to `main` will collide right before submission. Create a branch per lane from minute one:
+
+```bash
+git checkout -b data        # or agent, frontend, story
+```
+
+Merge into `main` whenever your lane has something another lane needs (such as your ISO GQL `GRAPH` queries or the deployed agent URL). Keep your files inside `$HOME` (your cloned repo), because `$HOME` persists across Cloud Shell restarts while directories outside it do not.
+
+Helpful references:
+[Using Cloud Shell](https://docs.cloud.google.com/shell/docs/using-cloud-shell)
+·
+[Cloud Shell Editor overview](https://docs.cloud.google.com/shell/docs/editor-overview)
+
+#### Strongly recommended: Antigravity, the IDE and the CLI
+
+Antigravity is Google's agentic coding environment, already available in two forms:
+
+- **The Antigravity IDE:** Launched from the button in your Google Skills lab environment. It reads your repository, proposes multi-file edits you review before accepting, runs terminal commands, and tests in a browser.
+- **The Antigravity CLI (`agy`):** Preinstalled in Cloud Shell with zero setup:
+
+  ```bash
+  agy
+  ```
+
+  Where it saves the most time in a 4.5-hour sprint:
+  - **Agent lane:** scaffolding ADK boilerplate, wrapping your `GRAPH ... MATCH` queries inside Python tools, and drafting Cloud Run deployment configs.
+  - **Data lane:** iterating on ISO GQL syntax (`LET`, `FILTER`, `NEXT`, `case_chain_id` correlation) and post-output Equity Audit SQL.
+  - **Anyone stuck on an error:** paste the traceback and let it inspect your actual files. Use `/diff` to review pending edits before accepting and `/permissions` to control autonomy.
+
+[Antigravity: getting started](https://antigravity.google/docs/getting-started)
+·
+[IDE overview](https://antigravity.google/docs/ide/overview/)
+·
+[CLI install and auth](https://antigravity.google/docs/cli/install)
+·
+[CLI hands-on codelab](https://codelabs.developers.google.com/antigravity-cli-hands-on)
 
 ### Step 4: Load the data
 
-**Option A: Colab Enterprise / Notebook (Recommended)**
-Import [`notebooks/c_ei_01_load_explore.ipynb`](notebooks/c_ei_01_load_explore.ipynb), set `STATE` (`MS`, `AL`, `GA`, `TX`, `CA`, or `NY`), and run all cells. Section 1b sets up the `a4i-graph` Enterprise reservation, Section 2 proves why flat waitlist sorting misses coordinator fax bottlenecks, Sections 4 and 5 expose the ACS zero-column and NSCH 6x grain traps, and Section 12 validates foreign-key graph integrity.
+**Data lane's job.** One person runs it while the other lanes start immediately.
 
-**Option B: Headless CLI Fallback (`scripts/load.sh`)**
+1. In the Google Cloud console, search for **Colab Enterprise** and open it.
+2. **You will be prompted to enable required APIs. Accept them.** When the Colab Enterprise home page loads, it often displays a *second* **Enable APIs** banner at the top. Click that too. Seeing two prompts on a fresh project is expected.
+3. Go to **My Notebooks** -> **Import** -> source **URL**, and paste this raw notebook URL:
+
+   ```text
+   https://raw.githubusercontent.com/Bornism/A4I2026-challenge-early-intervention/main/notebooks/c_ei_01_load_explore.ipynb
+   ```
+
+   *(If your team modifies the notebook later, get your own copy's raw URL by opening the file on GitHub and clicking **Raw**.)*
+4. Click **Import**, open the notebook, set `STATE` (`MS`, `AL`, `GA`, `TX`, `CA`, or `NY`) in the first code cell, and run the cells top to bottom. Section 1b automatically enables the Reservation API if needed and sets up the `a4i-graph` Enterprise reservation, Section 2 proves why flat waitlist sorting misses coordinator fax bottlenecks, Sections 4 and 5 expose the ACS zero-column and NSCH 6x grain traps, and Section 12 runs 28 foreign-key and graph integrity checks.
+
+**Headless CLI Fallback (`scripts/load.sh`):**
+If Colab Enterprise is slow or unavailable, run the headless loader from your cloned repository root in Cloud Shell:
 
 ```bash
 bash scripts/load.sh                 # defaults to MS (Mississippi)
@@ -217,17 +299,19 @@ bash scripts/load.sh CA              # or AL, GA, TX, NY
 bash scripts/load.sh --list          # list all six pre-staged states
 ```
 
+Invoke it with `bash` rather than `./scripts/load.sh` so file permissions never block you. Every run replaces tables cleanly (`--replace`), so switching states or re-running is completely safe.
+
 ### What you'll have
 
-Five validated tables in `<your-project>.a4i_early_intervention` (all inside one dataset, ready for `CREATE PROPERTY GRAPH`):
+Five validated tables in `<your-project>.a4i_early_intervention` for your selected state (all inside one dataset, ready for `CREATE PROPERTY GRAPH`, with default `MS` counts shown alongside the 6-state starter pack total):
 
-| Table | Grain | Rows (6-state pack) | Provenance summary |
-|---|---|---:|---|
-| `acs_under5_tract_demographics` | 1 row / census tract | 426 | **Real public** US Census ACS under-5 counts, poverty, zero-vehicle, TIGER polygons & `audit_*` shares (`limited_english_rate` is `0.0`) |
-| `nsch_developmental_screening_survey` | 1 row / state income-language stratum (`6`/state) | 36 | **Modeled state-level only** (`geographic_level = 'Statewide'`), calibrated to HRSA NSCH NPM-6 totals |
-| `idea_part_c_agency_performance` | 1 row / synthetic regional hub (`3`/state) | 18 | **100% `[Synthetic]`** regional Part C lead agencies calibrated to OSEP 45-day IFSP state reports |
-| `pediatric_and_ei_provider_directory` | 1 row / `CareNode` vertex (`30`/state) | 180 | **100% `[Synthetic]`** clinics, coordinators, eval hubs & therapy vendors (`SYN-PROV-*`, zero real clinicians) |
-| `deidentified_part_c_referral_logs` | 1 row / `ReferralHandoff` edge (`149`/state) | 894 | **100% `[Synthetic]`** variable-length (`2` to `4` hop) referral & re-referral chains (`44` chains/state) |
+| Table | Grain | Loaded rows (`MS` default) | 6-state pack total | Provenance summary |
+|---|---|---:|---:|---|
+| `acs_under5_tract_demographics` | 1 row / census tract | 64 | 426 | **Real public** US Census ACS under-5 counts, poverty, zero-vehicle, TIGER polygons & `audit_*` shares (`limited_english_rate` is `0.0`) |
+| `nsch_developmental_screening_survey` | 1 row / state income-language stratum | 6 | 36 | **Modeled state-level only** (`geographic_level = 'Statewide'`), calibrated to HRSA NSCH NPM-6 totals |
+| `idea_part_c_agency_performance` | 1 row / synthetic regional hub | 3 | 18 | **100% `[Synthetic]`** regional Part C lead agencies calibrated to OSEP 45-day IFSP state reports |
+| `pediatric_and_ei_provider_directory` | 1 row / `CareNode` vertex | 30 | 180 | **100% `[Synthetic]`** clinics, coordinators, eval hubs & therapy vendors (`SYN-PROV-*`, zero real clinicians) |
+| `deidentified_part_c_referral_logs` | 1 row / `ReferralHandoff` edge | 149 | 894 | **100% `[Synthetic]`** variable-length (`2` to `4` hop) referral & re-referral chains (`44` chains/state) |
 
 ---
 
@@ -275,6 +359,8 @@ Never use `audit_black_share`, `audit_hispanic_share`, `audit_asian_share`, `aud
 | ❌ No **unstated license** | Unlicensed directories cannot be loaded |
 | ✅ **Public domain, CC0, US Government works** | Safe |
 
+**The license trap most likely to catch you:** anything derived from **OpenStreetMap carries the `ODbL` share-alike license**, and private pediatric provider directories or commercial care-finder websites are all-rights-reserved (and hold real clinician PII). Check the license before loading, and ask a coach if you are unsure.
+
 ---
 
 ## What's in this repository
@@ -293,6 +379,12 @@ agent/                                       Empty on purpose. Your ADK agent go
 
 ## How you'll be judged
 
+**"Finished" is not the goalpost.** Almost nobody completes every stretch idea in 4.5 hours. A team that gets three quarters of the way with genuine multi-hop ISO GQL traversals, verified graph integrity, and honest synthetic-data framing will beat a team that demos something polished and hollow.
+
+**You are judged against the track you chose**, not against a fixed answer key. State your chosen state and track right at the start of your deck and video.
+
+**Judges score your submission asynchronously, not a live Q&A.** Put the answers to the questions below directly into your deck and your **<=3-minute pitch video**:
+
 | Dimension | Weight | The question judges are asking |
 |---|---:|---|
 | **Impact & insight** | 30 | Would an IDEA Part C coordinator actually use this to route referrals under 45 days and fix regional bottlenecks? |
@@ -300,6 +392,21 @@ agent/                                       Empty on purpose. Your ADK agent go
 | **Rigor & judgment** | 25 | Did you correlate `case_chain_id`, catch the all-zero `limited_english_rate` and 6x NSCH grain traps, state 100% synthetic provider provenance honestly, and run the `audit_*` Equity Audit? |
 | **Craft & communication** | 15 | Does your <=3-minute video show multi-hop paths clearly on screen during a live run, and can you defend your UI choice? |
 | **Bonus: range** | **+10** | Counterfactual bottleneck simulation, aging-out triage (`child_age_months`), or compliant BYOD enrichment |
+
+Bonus sits **on top** of the 100, so ambition never cannibalizes the fundamentals. Nail the core workflow and add nothing extra, and you can still win.
+
+### What "Rigor and judgment" actually means
+
+This is a quarter of your score and the easiest place to stand out:
+
+1. **Data and synthetic-ethics honesty:** State clearly that `SYN-PROV-*` / `SYN-PARTC-*` nodes and referral chains are **100% `[Synthetic]`** (so made-up waitlists or federal 45-day breaches never touch real clinicians), while ACS under-5 counts are real public Census data and HRSA NSCH strata are `Statewide`-only.
+2. **Validation and grain discipline:** Show that you caught `limited_english_rate = 0.0` in the ACS extract (`Section 4`), avoided the 6x statewide NSCH fan-out (`Section 5`), and correlated `case_chain_id` across variable-length hops (`Section 13`).
+3. **Bias handling:** Keep `audit_*` columns out of routing rules, run the post-output Equity Audit (`Section 11`), and report actual numbers on which neighborhoods suffer `>45`-day breaches and how zero-vehicle families are supported.
+4. **Knowing what a graph cannot do alone:** A property graph exposes where packets bounce, while clinical eligibility, aging-out urgency (`36` months), and caregiver transport still require explicit operational judgment.
+
+### A note on decisions generally
+
+Which state you pick, how you trade off travel distance against waitlist days for zero-vehicle families, and whether you build an internal staff UI or a custom path visualizer have no single answer key. Judges reward teams who make those choices deliberately and explain why.
 
 ---
 
