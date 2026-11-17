@@ -86,10 +86,10 @@ GROUP BY 1
 ORDER BY 1;
 
 -- ============================================================================
--- Query 4: Counterfactual Bottleneck Simulation (+10 Bonus: Range)
--- Simulates: What if Coordinator 012 converts all 'paper_fax' handoffs to
--- 'ehr_electronic_portal' (reducing wait from ~19.5d to ~4d)?
--- Computes child-days saved and cases recovered from >45-day federal breach.
+-- Query 4: Counterfactual Bottleneck Simulation
+-- Models the operational impact of replacing paper fax handoffs at regional
+-- intake hubs with electronic portal routing (4-day baseline wait).
+-- Computes child-days recovered and reduction in federal 45-day statutory breaches.
 -- ============================================================================
 WITH simulation AS (
     SELECT
@@ -110,9 +110,10 @@ SELECT
 FROM simulation;
 
 -- ============================================================================
--- Query 5: 36-Month Age-Out Cliff Triage (Domain Empathy Criterion)
--- Part C services legally end at 36 months (3rd birthday). Children referred
--- at >= 30 months risk aging out before receiving therapies.
+-- Query 5: Part C Age-Out Risk Triage (36-Month Transition Cliff)
+-- Part C eligibility terminates on the child's 3rd birthday (36 months).
+-- Referrals arriving at 30+ months require fast-tracked evaluations and
+-- concurrent Part B preschool notification to avoid service disruption.
 -- ============================================================================
 SELECT
     child_age_months,

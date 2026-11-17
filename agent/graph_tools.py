@@ -182,10 +182,11 @@ def simulate_counterfactual_fax_upgrade(
     dataset_id: str = "a4i_early_intervention",
     simulated_ehr_wait_days: int = 4,
 ) -> Dict[str, Any]:
-    """Simulates the network fix bonus (+10 Range):
+    """Simulates the network-wide effect of eliminating paper fax handoffs.
 
-    Computes how many >45-day statutory breaches are eliminated and total child-days
-    saved if paper-fax coordinator handoffs are converted to electronic intake.
+    Calculates how many statutory 45-day breaches drop into compliance and the
+    net cumulative child-days recovered when intake coordinators switch to
+    electronic portal transmissions.
     """
     client = get_bigquery_client(project_id)
     query = f"""
@@ -217,9 +218,10 @@ def simulate_counterfactual_fax_upgrade(
 
 
 def evaluate_age_out_risk(child_age_months: int) -> Dict[str, Any]:
-    """Evaluates 36-month Part C age-out cliff risk (Domain Empathy Criterion).
+    """Classifies Part C age-out risk against the statutory 36-month program exit.
 
-    Federal law terminates Part C on the child's 3rd birthday (36 months).
+    Children referred at 30+ months face high risk of aging out before receiving
+    services, requiring accelerated evaluations and concurrent Part B preschool outreach.
     """
     if child_age_months >= 32:
         return {
