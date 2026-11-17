@@ -84,3 +84,47 @@ INNER JOIN `a4i_early_intervention.acs_under5_tract_demographics` AS d
     ON c.child_home_tract_geoid = d.census_tract_geoid
 GROUP BY 1
 ORDER BY 1;
+
+-- ============================================================================
+-- Query 4: Counterfactual Bottleneck Simulation (+10 Bonus: Range)
+-- Simulates: What if Coordinator 012 converts all 'paper_fax' handoffs to
+-- 'ehr_electronic_portal' (reducing wait from ~19.5d to ~4d)?
+-- Computes child-days saved and cases recovered from >45-day federal breach.
+-- ============================================================================
+WITH simulation AS (
+    SELECT
+        case_chain_id,
+        -- Actual baseline wait days for the referral episode
+        SUM(handoff_wait_days) AS baseline_wait_days,
+        -- Simulated wait days: replace paper_fax with electronic intake (4 days)
+        SUM(IF(transmission_channel = 'paper_fax', 4, handoff_wait_days)) AS simulated_wait_days
+    FROM `a4i_early_intervention.deidentified_part_c_referral_logs`
+    GROUP BY case_chain_id
+)
+SELECT
+    COUNT(*) AS total_episodes,
+    COUNTIF(baseline_wait_days > 45) AS baseline_breaches,
+    COUNTIF(simulated_wait_days <= 45 AND baseline_wait_days > 45) AS cases_recovered_to_compliance,
+    ROUND(COUNTIF(simulated_wait_days <= 45 AND baseline_wait_days > 45) * 100.0 / COUNTIF(baseline_wait_days > 45), 1) AS recovery_rate_pct,
+    SUM(baseline_wait_days - simulated_wait_days) AS total_child_days_saved
+FROM simulation;
+
+-- ============================================================================
+-- Query 5: 36-Month Age-Out Cliff Triage (Domain Empathy Criterion)
+-- Part C services legally end at 36 months (3rd birthday). Children referred
+-- at >= 30 months risk aging out before receiving therapies.
+-- ============================================================================
+SELECT
+    child_age_months,
+    CASE 
+        WHEN child_age_months >= 32 THEN 'CRITICAL_AGE_OUT_CLIFF'
+        WHEN child_age_months >= 30 THEN 'ELEVATED_TRANSITION_RISK'
+        ELSE 'STANDARD_UNDER_3'
+    END AS transition_risk_tier,
+    CASE 
+        WHEN child_age_months >= 32 THEN 'Fast-track expedited evaluation: parallel Part B preschool notification required'
+        WHEN child_age_months >= 30 THEN 'Flag 60-day Part B transition conference upon initial IFSP scheduling'
+        ELSE 'Standard Part C 45-day evaluation workflow'
+    END AS clinical_action_guidance
+FROM UNNEST([18, 22, 28, 30, 32, 34]) AS child_age_months
+ORDER BY child_age_months DESC;

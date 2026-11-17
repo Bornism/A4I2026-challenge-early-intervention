@@ -175,3 +175,70 @@ def get_post_output_equity_audit(
     """
     results = client.query(query).to_dataframe()
     return results.to_dict(orient="records")
+
+
+def simulate_counterfactual_fax_upgrade(
+    project_id: str,
+    dataset_id: str = "a4i_early_intervention",
+    simulated_ehr_wait_days: int = 4,
+) -> Dict[str, Any]:
+    """Simulates the network fix bonus (+10 Range):
+
+    Computes how many >45-day statutory breaches are eliminated and total child-days
+    saved if paper-fax coordinator handoffs are converted to electronic intake.
+    """
+    client = get_bigquery_client(project_id)
+    query = f"""
+    WITH simulation AS (
+        SELECT
+            case_chain_id,
+            SUM(handoff_wait_days) AS baseline_wait_days,
+            SUM(IF(transmission_channel = 'paper_fax', {simulated_ehr_wait_days}, handoff_wait_days)) AS simulated_wait_days
+        FROM `{project_id}.{dataset_id}.deidentified_part_c_referral_logs`
+        GROUP BY case_chain_id
+    )
+    SELECT
+        COUNT(*) AS total_episodes,
+        COUNTIF(baseline_wait_days > 45) AS baseline_breaches,
+        COUNTIF(simulated_wait_days <= 45 AND baseline_wait_days > 45) AS cases_recovered_to_compliance,
+        ROUND(COUNTIF(simulated_wait_days <= 45 AND baseline_wait_days > 45) * 100.0 / COUNTIF(baseline_wait_days > 45), 1) AS recovery_rate_pct,
+        SUM(baseline_wait_days - simulated_wait_days) AS total_child_days_saved
+    FROM simulation;
+    """
+    rows = list(client.query(query).result())
+    r = rows[0]
+    return {
+        "total_episodes": r.total_episodes,
+        "baseline_breaches": r.baseline_breaches,
+        "cases_recovered_to_compliance": r.cases_recovered_to_compliance,
+        "recovery_rate_pct": r.recovery_rate_pct,
+        "total_child_days_saved": r.total_child_days_saved,
+    }
+
+
+def evaluate_age_out_risk(child_age_months: int) -> Dict[str, Any]:
+    """Evaluates 36-month Part C age-out cliff risk (Domain Empathy Criterion).
+
+    Federal law terminates Part C on the child's 3rd birthday (36 months).
+    """
+    if child_age_months >= 32:
+        return {
+            "child_age_months": child_age_months,
+            "risk_tier": "CRITICAL_AGE_OUT_CLIFF",
+            "clinical_guidance": "Fast-track expedited evaluation: parallel Part B preschool notification required immediately.",
+            "urgent_buffer_flag": True,
+        }
+    elif child_age_months >= 30:
+        return {
+            "child_age_months": child_age_months,
+            "risk_tier": "ELEVATED_TRANSITION_RISK",
+            "clinical_guidance": "Flag 60-day Part B transition conference upon initial IFSP scheduling.",
+            "urgent_buffer_flag": True,
+        }
+    else:
+        return {
+            "child_age_months": child_age_months,
+            "risk_tier": "STANDARD_UNDER_3",
+            "clinical_guidance": "Standard Part C 45-day evaluation workflow.",
+            "urgent_buffer_flag": False,
+        }
