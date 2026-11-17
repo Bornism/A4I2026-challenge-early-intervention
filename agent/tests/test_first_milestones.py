@@ -23,12 +23,18 @@ from first_milestones.tools import (  # noqa: E402
     detect_regional_bottleneck_hubs,
     find_compliant_45d_pathways,
     find_viable_45d_paths,
+    get_referral_history,
     prioritize_community_screening_tracts,
     rank_outreach_zones,
     run_post_output_equity_audit,
     simulate_hub_intervention,
 )
-from first_milestones.tools.bq_client import DualBackendGraphClient, graph_client  # noqa: E402
+from first_milestones.tools.bq_client import (  # noqa: E402
+    DualBackendGraphClient,
+    graph_client,
+    load_local_state_frames,
+    request_state_context,
+)
 from first_milestones.tools.equity_audit import _build_outreach_zones_gql  # noqa: E402
 from main import app  # noqa: E402
 
@@ -367,3 +373,173 @@ def test_brief_hydration_and_new_chat_intents() -> None:
     )
     assert r_prefix.status_code == 200
     assert r_prefix.json()["brief"]["viable_45d_paths"]["tract_context"]["county_fips"] == "28049"
+
+
+def test_gemini_model_fallback_chain() -> None:
+    import main as server_main
+    from first_milestones.agent import DEFAULT_MODEL, get_model_candidates
+
+    candidates = get_model_candidates()
+    assert DEFAULT_MODEL == "gemini-2.5-pro"
+    assert candidates[0] == "gemini-2.5-pro"
+    assert "gemini-2.5-flash" in candidates
+    assert "gemini-3-flash-preview" in candidates
+
+    client = TestClient(app)
+
+    class _FakeRunner:
+        def __init__(self, model_name: str, should_fail: bool) -> None:
+            self.model_name = model_name
+            self.should_fail = should_fail
+
+        async def run_async(self, **_: object):
+            if self.should_fail:
+                raise RuntimeError(f"Simulated capacity error on {self.model_name}")
+            part = MagicMock(text=f"Backup response from {self.model_name}")
+            ev = MagicMock()
+            ev.get_function_calls.return_value = []
+            ev.get_function_responses.return_value = []
+            ev.is_final_response.return_value = True
+            ev.content = MagicMock(parts=[part])
+            yield ev
+
+    fake_runners = {
+        candidates[0]: _FakeRunner(candidates[0], should_fail=True),
+        candidates[1]: _FakeRunner(candidates[1], should_fail=False),
+    }
+
+    with patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-test-key"}):
+        with patch.object(server_main, "_get_runner", side_effect=lambda m: fake_runners[m]):
+            r = client.post(
+                "/api/chat",
+                json={"message": "Check MS bounce hubs", "state_code": "MS"},
+            )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["model_used"] == candidates[1]
+    assert body["fallback_used"] is True
+    assert candidates[1] in body["mode"]
+    assert f"Backup response from {candidates[1]}" in body["reply"]
+
+
+def test_referral_history_delay_math_validation_and_compactness() -> None:
+    os.environ["A4I_STATE"] = "MS"
+
+    # 1. Historical referral chain retrieval & exact referral_date -> next_step_date delay math
+    with request_state_context("MS"):
+        h2 = get_referral_history(case_chain_id="CHAIN-MS-002")
+        assert h2["status"] == "ok"
+        assert len(h2["chains"]) == 1
+        ch2 = h2["chains"][0]
+        assert ch2["total_hops"] == 3
+        assert ch2["total_wait_days"] == 41
+        assert ch2["clears_45d_clock"] is True
+        for idx in range(len(ch2["hops"]) - 1):
+            assert ch2["hops"][idx]["next_step_date"] == ch2["hops"][idx + 1]["referral_date"]
+
+        h5 = get_referral_history(case_chain_id="CHAIN-MS-005")
+        assert h5["status"] == "ok"
+        assert len(h5["chains"]) == 1
+        ch5 = h5["chains"][0]
+        assert ch5["total_hops"] == 4
+        assert ch5["total_wait_days"] == 77
+        assert ch5["clears_45d_clock"] is False
+        for idx in range(len(ch5["hops"]) - 1):
+            assert ch5["hops"][idx]["next_step_date"] == ch5["hops"][idx + 1]["referral_date"]
+
+        # 2. Viable <=45d 3-hop Autism paths, zero 1-hop shortcuts, zero congested hubs, explicit relationship_type
+        res = find_viable_45d_paths(
+            zip_or_tract="28049003500",
+            specialty="Autism",
+            child_age_months=32,
+        )
+        assert res["status"] == "ok"
+        assert len(res["viable_paths"]) >= 1
+        assert any(
+            p["hop_count"] == 3 and p["total_expected_days"] <= 45
+            for p in res["viable_paths"]
+        )
+        assert all(p["hop_count"] >= 2 for p in res["viable_paths"])
+        assert all(
+            p.get("relationship_type") in ("observed_clean_corridor", "prospective_capability")
+            for p in res["viable_paths"]
+        )
+
+        prov_df = load_local_state_frames("MS")["providers"]
+        congestion_by_id = {
+            str(r["provider_id"]): int(r["active_waitlist_count"]) / max(1, int(r["monthly_slot_capacity"]))
+            for _, r in prov_df.iterrows()
+        }
+        for p in res["viable_paths"]:
+            # All Part C nodes along the corridor (coordinator, eval hub, therapy vendor) must be uncongested
+            max_node_congestion_ratio = max(congestion_by_id[nid] for nid in p["nodes"][1:])
+            assert max_node_congestion_ratio <= 1.0
+
+        # 3. Parameter validation: >=36m statutory gate, cross-state tract, negated insurance/language, top_n
+        aged_out_viable = find_viable_45d_paths(zip_or_tract="28049003500", child_age_months=38)
+        assert aged_out_viable["status"] == "ineligible_part_c_aged_out"
+        assert aged_out_viable["child_age_months"] == 38
+
+        aged_out_route = find_compliant_45d_pathways(
+            child_tract_geoid="28049003500", child_age_months=38
+        )
+        assert aged_out_route["status"] == "ineligible_part_c_aged_out"
+
+        cross_state = find_viable_45d_paths(zip_or_tract="06047000801")
+        assert cross_state["status"] == "validation_error"
+
+        no_med = find_viable_45d_paths(zip_or_tract="28049003500", insurance="No Medicaid")
+        assert no_med["query_parameters"]["needs_medicaid"] is False
+
+        eng_only = find_viable_45d_paths(zip_or_tract="28049003500", languages="English only")
+        assert eng_only["query_parameters"]["needs_bilingual"] is False
+
+        bad_top_n = rank_outreach_zones(top_n=0)
+        assert bad_top_n["status"] == "validation_error"
+        assert bad_top_n["error_code"] == "INVALID_TOP_N"
+
+    # True care-delivery Hidden EI Deserts across AL (Jefferson not desert) & TX (Starr is desert)
+    with request_state_context("AL"):
+        al_zones = rank_outreach_zones(top_n=12)["ranked_outreach_zones"]
+        assert all(
+            not z["is_hidden_ei_desert"]
+            for z in al_zones
+            if z["county_name"] == "Jefferson County"
+        )
+    with request_state_context("TX"):
+        tx_zones = rank_outreach_zones(top_n=12)["ranked_outreach_zones"]
+        starr_zones = [z for z in tx_zones if z["county_name"] == "Starr County"]
+        assert len(starr_zones) >= 1 and all(z["is_hidden_ei_desert"] for z in starr_zones)
+
+    # Workbench /api/chat routing to get_referral_history & graceful /api/brief cross-state validation
+    client = TestClient(app)
+    r_chat_chain = client.post(
+        "/api/chat",
+        json={"message": "Trace CHAIN-MS-005 referral history", "state_code": "MS"},
+    )
+    assert r_chat_chain.status_code == 200
+    chat_body = r_chat_chain.json()
+    assert "get_referral_history" in chat_body["tools_invoked"]
+    assert "CHAIN-MS-005" in chat_body["reply"]
+    assert "77" in chat_body["reply"]
+
+    r_brief_cross = client.get("/api/brief?state=MS&tract_geoid=06047000801")
+    assert r_brief_cross.status_code == 200
+    assert r_brief_cross.json()["routing"]["status"] == "validation_error"
+
+    # 4. Compactness: generate_complete_45d_brief excluded from root_agent.tools, all tools < 9,000 bytes
+    tool_names = [getattr(t, "__name__", getattr(t, "name", str(t))) for t in root_agent.tools]
+    assert "generate_complete_45d_brief" not in tool_names
+    assert "get_referral_history" in tool_names
+    assert len(root_agent.tools) >= 9
+
+    with request_state_context("MS"):
+        assert len(json.dumps(rank_outreach_zones(top_n=8))) < 6000
+        callable_tools = [t for t in root_agent.tools if callable(t)]
+        assert len(callable_tools) >= 9
+        for tool_fn in callable_tools:
+            out = tool_fn()
+            serialized_len = len(json.dumps(out))
+            assert serialized_len < 9000, (
+                f"Tool {tool_fn.__name__} returned {serialized_len} bytes (>= 9000 limit)"
+            )

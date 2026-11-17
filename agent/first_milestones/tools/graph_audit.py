@@ -1,27 +1,45 @@
-"""Custom ISO GQL Network Audit & Counterfactual Bottleneck Simulator Tools.
+"""Custom ISO GQL Network Audit, Historical Referral Retrieval & Counterfactual Simulator Tools.
 
 Provides:
-  1. `audit_multihop_bounce_hubs`: Variable-length `-{2,4}->` ISO GQL traversal
+  1. `get_referral_history`: Episodic `-{2,4}->` ISO GQL historical referral chain
+     retrieval (`REFERS_TO` edges) with hop-by-hop timestamp & calendar wait-delta proof,
+     canonical Hop-1 `child_age_months_at_referral`, and strict active-state selector
+     validation (`case_chain_id`, `provider_id`, `tract_geoid`).
+  2. `audit_multihop_bounce_hubs`: Variable-length `-{2,4}->` ISO GQL traversal
      correlated on `case_chain_id` and prefix-deduplicated (preventing Type B
      `Vendor -> Vendor` 3-hop prefix double counting). Exposes why flat SQL
      waitlist sorting blames downstream queues while missing low-wait `paper_fax`
      intake coordinators (`SYN-PROV-*-011`, `012`).
-  2. `simulate_hub_intervention`: Counterfactual graph simulation computing exact
-     delayed child-days saved and 45-day statutory breaches eliminated if one
+  3. `simulate_hub_intervention`: Counterfactual graph simulation computing exact
+     delayed child-days saved and 45-day statutory breaches eliminated if a targeted
      coordinator hub upgrades `paper_fax` -> `ehr_electronic_portal` and pre-verifies
      bilingual/Medicaid evaluation slot availability.
-  3. `detect_regional_bottleneck_hubs`: Regional betweenness-centrality audit over
-     2–4 hop breached referral chains, exposing low-internal-wait intermediate hubs
+  4. `detect_regional_bottleneck_hubs`: Regional betweenness-centrality audit over
+     2-4 hop breached referral chains, exposing low-internal-wait intermediate hubs
      that carry disproportionate statutory breach flow.
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date, timedelta
 import re
 from typing import Any
 
-from .bq_client import get_config, graph_client, load_local_state_frames
+from .bq_client import (
+    VALID_STATES,
+    get_config,
+    graph_client,
+    load_local_state_frames,
+    rewrite_sql_dataset,
+)
+
+_SAFE_ID_RE = re.compile(r"^[A-Z0-9_-]+$")
+_RELATIONSHIP_SEMANTICS = (
+    "REFERS_TO edges represent historical episodic child referral events "
+    "('actually referred to'); each hop's handoff_wait_days equals the exact "
+    "calendar delta to the next hop."
+)
 
 
 def _clean_state_code(state_code: str) -> str:
@@ -30,44 +48,371 @@ def _clean_state_code(state_code: str) -> str:
     return clean if re.fullmatch(r"^[A-Z]{2}$", clean) else ""
 
 
+def _coerce_bool(val: Any, default: bool = False) -> bool:
+    """Coalesces None and string/boolean inputs safely."""
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("true", "1", "yes", "y"):
+            return True
+        if norm in ("false", "0", "no", "n", ""):
+            return False
+    return bool(val)
+
+
+def _parse_int_param(val: Any, default: int) -> tuple[int | None, bool]:
+    """Parses an optional int parameter, rejecting booleans and invalid strings."""
+    if val is None:
+        return default, True
+    if isinstance(val, bool):
+        return None, False
+    try:
+        return int(val), True
+    except (TypeError, ValueError):
+        return None, False
+
+
+def _build_referral_history_gql(
+    dataset: str,
+    state_code: str = "",
+    case_chain_id: str = "",
+    provider_id: str = "",
+    tract_geoid: str = "",
+    only_breaches: bool = False,
+    limit_chains: int = 3,
+) -> str:
+    """Builds a prefix-safe ISO/IEC 39075 GQL query for historical referral chains."""
+    clean_state = _clean_state_code(state_code)
+    clauses: list[str] = []
+    if clean_state:
+        clauses.append(f"src.state_code = '{clean_state}'")
+    clauses.append("r[OFFSET(0)].hop_sequence = 1")
+    clauses.append("(SELECT COUNT(DISTINCT h.case_chain_id) FROM UNNEST(r) AS h) = 1")
+
+    clean_chain = (case_chain_id or "").strip().upper()
+    if clean_chain and _SAFE_ID_RE.fullmatch(clean_chain):
+        clauses.append(f"r[OFFSET(0)].case_chain_id = '{clean_chain}'")
+
+    clean_prov = (provider_id or "").strip().upper()
+    if clean_prov and _SAFE_ID_RE.fullmatch(clean_prov):
+        clauses.append(
+            "EXISTS(SELECT 1 FROM UNNEST(r) AS h "
+            f"WHERE h.source_provider_id = '{clean_prov}' OR h.target_provider_id = '{clean_prov}')"
+        )
+
+    clean_tract = (tract_geoid or "").strip()
+    if clean_tract.isdigit() and len(clean_tract) in (10, 11):
+        padded_tract = clean_tract.zfill(11)
+        clauses.append(f"LPAD(CAST(r[OFFSET(0)].child_home_tract_geoid AS STRING), 11, '0') = '{padded_tract}'")
+
+    where_sql = " AND ".join(clauses)
+    limit_int = max(1, min(int(limit_chains or 3), 10))
+    is_unfiltered_sample = not (clean_chain or clean_prov or clean_tract) and not only_breaches
+    breach_where = " WHERE total_wait_days > 45" if only_breaches else ""
+    order_sql = (
+        "ROW_NUMBER() OVER (PARTITION BY total_wait_days > 45 ORDER BY total_wait_days DESC, chain_id), "
+        "total_wait_days DESC"
+        if is_unfiltered_sample
+        else "total_wait_days DESC, chain_id"
+    )
+    return (
+        f"WITH chains AS (SELECT * FROM GRAPH_TABLE({dataset}.ReferralGraph\n"
+        "  MATCH (src:CareNode {node_role: 'Screening_Pediatric_Clinic'})-[r:REFERS_TO]->{2,4}"
+        "(dest:CareNode {node_role: 'EI_Therapy_Vendor'})\n"
+        f"  WHERE {where_sql}\n"
+        "  LET chain_id = r[OFFSET(0)].case_chain_id, total_hops = ARRAY_LENGTH(r),\n"
+        "      total_wait_days = (SELECT SUM(h.handoff_wait_days) FROM UNNEST(r) AS h),\n"
+        "      hops = ARRAY(SELECT AS STRUCT h.hop_sequence, h.referral_event_id, h.source_provider_id, "
+        "h.target_provider_id, h.handoff_wait_days FROM UNNEST(r) h ORDER BY 1)\n"
+        "  RETURN chain_id, total_hops, total_wait_days, hops)\n"
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY chain_id ORDER BY total_hops DESC) = 1)\n"
+        f"SELECT * FROM chains{breach_where} ORDER BY {order_sql} LIMIT {limit_int};"
+    )
+
+
+def get_referral_history(
+    case_chain_id: str = "",
+    provider_id: str = "",
+    tract_geoid: str = "",
+    only_breaches: bool = False,
+    limit_chains: int = 3,
+) -> dict[str, Any]:
+    """Retrieves episodic 2-4 hop referral chains with exact hop timestamps and delay proof.
+
+    Traverses `ReferralGraph` (`REFERS_TO` edges from `Screening_Pediatric_Clinic` to
+    `EI_Therapy_Vendor`, prefix-deduplicated by `case_chain_id`) or its local GeoParquet
+    mirror, proving that each hop's `handoff_wait_days` equals the exact calendar delta
+    to the next hop and preserving Hop 1's canonical `child_age_months_at_referral`.
+
+    Args:
+        case_chain_id: Optional chain ID (e.g. 'CHAIN-MS-023') in the active state.
+        provider_id: Optional `SYN-PROV-*` ID matched as source or target on any hop.
+        tract_geoid: Optional 10- or 11-digit Census tract GEOID (`child_home_tract_geoid`).
+        only_breaches: If True, returns only chains with `total_wait_days > 45`.
+        limit_chains: Max chains to return (`1..10`, defaults to `3`).
+    """
+    raw_chain = "" if case_chain_id is None else str(case_chain_id)
+    raw_prov = "" if provider_id is None else str(provider_id)
+    raw_tract = "" if tract_geoid is None else str(tract_geoid)
+    only_breaches_bool = _coerce_bool(only_breaches, default=False)
+
+    limit_int, ok_limit = _parse_int_param(limit_chains, default=3)
+    if not ok_limit or limit_int is None or limit_int < 1:
+        return {
+            "status": "validation_error",
+            "error_code": "INVALID_LIMIT_CHAINS",
+            "message": "limit_chains must be >= 1 (max 10).",
+        }
+    limit_int = min(limit_int, 10)
+
+    cfg = get_config()
+    state_code = cfg["state"]
+    frames = load_local_state_frames(state_code)
+    demo = frames["demo"]
+    prov = frames["providers"]
+    logs = frames["logs"]
+
+    prov_by_id = {str(r["provider_id"]): r for _, r in prov.iterrows()}
+    valid_chain_ids = sorted(logs["case_chain_id"].astype(str).unique().tolist())
+    valid_chain_set = set(valid_chain_ids)
+    valid_prov_ids = sorted(prov_by_id.keys())
+    valid_tract_set = set(demo["census_tract_geoid"].astype(str).tolist())
+    sample_log_tracts = sorted(logs["child_home_tract_geoid"].astype(str).unique().tolist())[:5]
+
+    clean_chain = raw_chain.strip().upper()
+    if clean_chain and clean_chain not in valid_chain_set:
+        other_state_note = ""
+        m_state = re.match(r"^CHAIN-([A-Z]{2})-\d+$", clean_chain)
+        if m_state and m_state.group(1) != state_code and m_state.group(1) in VALID_STATES:
+            other_state_note = (
+                f" Chain '{clean_chain}' belongs to state '{m_state.group(1)}', "
+                f"while active state is '{state_code}'."
+            )
+        return {
+            "status": "validation_error",
+            "error_code": "CHAIN_NOT_FOUND_IN_ACTIVE_STATE",
+            "state_code": state_code,
+            "case_chain_id": clean_chain,
+            "message": (
+                f"case_chain_id '{clean_chain}' was not found in active state '{state_code}'."
+                f"{other_state_note}"
+            ),
+            "sample_valid_chain_ids": valid_chain_ids[:5],
+        }
+
+    clean_prov = raw_prov.strip().upper()
+    if clean_prov and clean_prov not in prov_by_id:
+        return {
+            "status": "validation_error",
+            "error_code": "PROVIDER_NOT_FOUND_IN_ACTIVE_STATE",
+            "state_code": state_code,
+            "provider_id": clean_prov,
+            "message": (
+                f"provider_id '{clean_prov}' was not found in active state '{state_code}'."
+            ),
+            "sample_valid_provider_ids": valid_prov_ids[:6],
+        }
+
+    clean_tract_raw = raw_tract.strip()
+    clean_tract = ""
+    if clean_tract_raw:
+        if clean_tract_raw.isdigit() and len(clean_tract_raw) in (10, 11):
+            clean_tract = clean_tract_raw.zfill(11)
+        if not clean_tract or clean_tract not in valid_tract_set:
+            return {
+                "status": "validation_error",
+                "error_code": "TRACT_NOT_FOUND_IN_ACTIVE_STATE",
+                "state_code": state_code,
+                "tract_geoid": clean_tract_raw,
+                "message": (
+                    f"tract_geoid '{clean_tract_raw}' was not found in active state '{state_code}'."
+                ),
+                "sample_valid_tract_geoids": sample_log_tracts or sorted(valid_tract_set)[:5],
+            }
+
+    active_selectors = [
+        name
+        for name, val in (
+            ("case_chain", clean_chain),
+            ("provider", clean_prov),
+            ("tract", clean_tract),
+        )
+        if val
+    ]
+    if not active_selectors:
+        query_scope = "state_sample"
+    elif len(active_selectors) == 1:
+        query_scope = active_selectors[0]
+    else:
+        query_scope = "multi_filter"
+
+    iso_gql = _build_referral_history_gql(
+        cfg["dataset"],
+        state_code=state_code,
+        case_chain_id=clean_chain,
+        provider_id=clean_prov,
+        tract_geoid=clean_tract,
+        only_breaches=only_breaches_bool,
+        limit_chains=limit_int,
+    )
+    bq_rows = graph_client.query_bq_or_none(iso_gql)
+    active_ds = graph_client.get_last_resolved_dataset(cfg) if bq_rows is not None else cfg["dataset"]
+    iso_gql = rewrite_sql_dataset(iso_gql, cfg["dataset"], active_ds)
+    engine = (
+        f"bigquery_property_graph_iso_gql ({cfg['project']}.{active_ds}.ReferralGraph)"
+        if bq_rows is not None
+        else f"local_geoparquet_mirror ({state_code} starter tables)"
+    )
+
+    chains_by_id: dict[str, dict[str, Any]] = {}
+    chain_providers: dict[str, set[str]] = {}
+    for cid_raw, grp in logs.groupby("case_chain_id"):
+        grp_s = grp.sort_values("hop_sequence")
+        n_hops = len(grp_s)
+        if not (2 <= n_hops <= 4) or int(grp_s.iloc[0]["hop_sequence"]) != 1:
+            continue
+        first_src = str(grp_s.iloc[0]["source_provider_id"])
+        last_dst = str(grp_s.iloc[-1]["target_provider_id"])
+        src_meta = prov_by_id.get(first_src)
+        dst_meta = prov_by_id.get(last_dst)
+        if (
+            src_meta is None
+            or dst_meta is None
+            or str(src_meta["node_role"]) != "Screening_Pediatric_Clinic"
+            or str(dst_meta["node_role"]) != "EI_Therapy_Vendor"
+        ):
+            continue
+
+        cid = str(cid_raw)
+        hops_list: list[dict[str, Any]] = []
+        cum_days = 0
+        provs_touched: set[str] = set()
+        for _, h in grp_s.iterrows():
+            s_id = str(h["source_provider_id"])
+            t_id = str(h["target_provider_id"])
+            provs_touched.add(s_id)
+            provs_touched.add(t_id)
+            w_days = int(h["handoff_wait_days"])
+            cum_days += w_days
+            ref_d = date.fromisoformat(str(h["referral_date"])[:10])
+            next_d = ref_d + timedelta(days=w_days)
+            reason = str(h["handoff_reason"])
+            is_b = reason.startswith("Re-Referral Bounce")
+            hops_list.append({
+                "hop_seq": int(h["hop_sequence"]),
+                "event_id": str(h["referral_event_id"]),
+                "referral_date": ref_d.isoformat(),
+                "next_step_date": next_d.isoformat(),
+                "src_id": s_id,
+                "dst_id": t_id,
+                "dst_role": str(prov_by_id[t_id]["node_role"]),
+                "channel": str(h["transmission_channel"]),
+                "wait_days": w_days,
+                "cumulative_days": cum_days,
+                "dropoff_pct": round(float(h["dropoff_rate_pct"]) * 100.0, 1),
+                "reason": reason,
+                "is_bounce": is_b,
+            })
+
+        total_w = cum_days
+        hop1 = grp_s.iloc[0]
+        chains_by_id[cid] = {
+            "case_chain_id": cid,
+            "child_age_months_at_referral": int(hop1["child_age_months"]),
+            "initial_referral_date": hops_list[0]["referral_date"],
+            "final_handoff_date": hops_list[-1]["referral_date"],
+            "estimated_completion_date": hops_list[-1]["next_step_date"],
+            "total_hops": n_hops,
+            "total_wait_days": total_w,
+            "clears_45d_clock": total_w <= 45,
+            "headroom_or_excess_days": 45 - total_w,
+            "receiving_agency_id": str(hop1["receiving_agency_id"]),
+            "concern_domain": str(hop1["concern_domain"]),
+            "child_home_tract_geoid": str(hop1["child_home_tract_geoid"]),
+            "paper_fax_hops": sum(1 for x in hops_list if x["channel"] == "paper_fax"),
+            "bounce_hops": sum(1 for x in hops_list if x["is_bounce"]),
+            "hops": hops_list,
+        }
+        chain_providers[cid] = provs_touched
+
+    matched: list[dict[str, Any]] = []
+    for cid, cdict in chains_by_id.items():
+        if clean_chain and cid != clean_chain:
+            continue
+        if clean_prov and clean_prov not in chain_providers[cid]:
+            continue
+        if clean_tract and cdict["child_home_tract_geoid"] != clean_tract:
+            continue
+        if only_breaches_bool and cdict["clears_45d_clock"]:
+            continue
+        matched.append(cdict)
+
+    if bq_rows is not None:
+        selected: list[dict[str, Any]] = []
+        for row in bq_rows[:limit_int]:
+            rcid = str(row.get("chain_id") or row.get("case_chain_id") or "")
+            if rcid in chains_by_id:
+                selected.append(chains_by_id[rcid])
+        matched_count = len(matched) if selected else len(bq_rows)
+    elif query_scope == "state_sample" and not only_breaches_bool:
+        breached = sorted(
+            [c for c in matched if not c["clears_45d_clock"]],
+            key=lambda c: (-c["total_wait_days"], c["case_chain_id"]),
+        )
+        timely = sorted(
+            [c for c in matched if c["clears_45d_clock"]],
+            key=lambda c: (c["total_wait_days"], c["case_chain_id"]),
+        )
+        interleaved: list[dict[str, Any]] = []
+        max_len = max(len(breached), len(timely))
+        for idx in range(max_len):
+            if idx < len(breached):
+                interleaved.append(breached[idx])
+            if idx < len(timely):
+                interleaved.append(timely[idx])
+        selected = interleaved[:limit_int]
+        matched_count = len(matched)
+    else:
+        matched.sort(key=lambda c: (-c["total_wait_days"], c["case_chain_id"]))
+        selected = matched[:limit_int]
+        matched_count = len(matched)
+
+    return {
+        "status": "ok",
+        "engine": engine,
+        "state_code": state_code,
+        "query_scope": query_scope,
+        "matched_chains_count": matched_count,
+        "returned_chains_count": len(selected),
+        "relationship_semantics": _RELATIONSHIP_SEMANTICS,
+        "synthetic_provenance_notice": (
+            "100% [Synthetic] CareNode (SYN-PROV-*) & ReferralGraph handoff logs."
+        ),
+        "iso_gql_query": iso_gql,
+        "chains": selected,
+    }
+
+
 def _build_audit_iso_gql(dataset: str, state_code: str = "") -> str:
     clean_state = _clean_state_code(state_code)
-    state_filter = f"clinic.state_code = '{clean_state}'\n      AND " if clean_state else ""
-    return f"""-- Prefix-Safe Variable-Length ISO/IEC 39075 GQL Breach Traversal
-WITH complete_chains AS (
-  SELECT *
-  FROM GRAPH_TABLE(
-    {dataset}.ReferralGraph
-    MATCH (clinic:CareNode {{node_role: 'Screening_Pediatric_Clinic'}})
-          -[hops:ReferralHandoff]->{{2,4}}
-          (vendor:CareNode {{node_role: 'EI_Therapy_Vendor'}})
-    WHERE {state_filter}hops[OFFSET(0)].hop_sequence = 1
-      AND (SELECT COUNT(DISTINCT h.case_chain_id) FROM UNNEST(hops) AS h) = 1
-    LET chain_id = hops[OFFSET(0)].case_chain_id,
-        total_hops = ARRAY_LENGTH(hops),
-        child_age_months = hops[OFFSET(0)].child_age_months,
-        concern_domain = hops[OFFSET(0)].concern_domain,
-        home_tract = hops[OFFSET(0)].child_home_tract_geoid,
-        intake_coord_id = hops[OFFSET(0)].target_provider_id,
-        chain_wait_days = (SELECT SUM(h.handoff_wait_days) FROM UNNEST(hops) AS h),
-        fax_hops = (SELECT COUNTIF(h.transmission_channel = 'paper_fax') FROM UNNEST(hops) AS h),
-        bounce_reason = (
-          SELECT ARRAY_AGG(h.handoff_reason ORDER BY h.hop_sequence ASC LIMIT 1)[SAFE_OFFSET(0)]
-          FROM UNNEST(hops) AS h
-          WHERE STARTS_WITH(h.handoff_reason, 'Re-Referral Bounce')
-        )
-    RETURN
-      chain_id, child_age_months, concern_domain, home_tract,
-      clinic.provider_id AS origin_clinic_id, intake_coord_id,
-      vendor.provider_id AS final_vendor_id, total_hops, fax_hops,
-      chain_wait_days, bounce_reason
-  )
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY chain_id ORDER BY total_hops DESC) = 1
-)
-SELECT * FROM complete_chains ORDER BY chain_wait_days DESC;""".strip()
+    state_filter = f"c.state_code='{clean_state}' AND " if clean_state else ""
+    return (
+        f"SELECT * FROM GRAPH_TABLE({dataset}.ReferralGraph "
+        "MATCH (c:CareNode {node_role:'Screening_Pediatric_Clinic'})-[r:ReferralHandoff]->{2,4}"
+        "(v:CareNode {node_role:'EI_Therapy_Vendor'}) "
+        f"WHERE {state_filter}r[OFFSET(0)].hop_sequence=1 "
+        "AND (SELECT COUNT(DISTINCT h.case_chain_id) FROM UNNEST(r) h)=1 "
+        "LET id=r[OFFSET(0)].case_chain_id, hops=ARRAY_LENGTH(r), "
+        "wait_d=(SELECT SUM(h.handoff_wait_days) FROM UNNEST(r) h) "
+        "RETURN id, r[OFFSET(0)].target_provider_id AS coord_id, hops, wait_d) "
+        "QUALIFY ROW_NUMBER() OVER(PARTITION BY id ORDER BY hops DESC)=1 ORDER BY wait_d DESC;"
+    )
 
 
-def audit_multihop_bounce_hubs(only_breaches: bool = True, limit_chains: int = 10) -> dict[str, Any]:
+def audit_multihop_bounce_hubs(only_breaches: bool = True, limit_chains: int = 3) -> dict[str, Any]:
     """Traces variable-length `-{2,4}->` referral chains and exposes hidden Bounce Hubs.
 
     Compares naive flat provider waitlist sorting (`active_waitlist_count DESC`) against
@@ -78,8 +423,18 @@ def audit_multihop_bounce_hubs(only_breaches: bool = True, limit_chains: int = 1
 
     Args:
         only_breaches: If True, returns only >45-day breached episodes in the detailed sample.
-        limit_chains: Number of worst multi-hop episodes to return with full hop traces.
+        limit_chains: Number of worst multi-hop episodes to return (`1..8`, defaults to `3`).
     """
+    only_breaches_bool = _coerce_bool(only_breaches, default=True)
+    limit_int, ok_limit = _parse_int_param(limit_chains, default=3)
+    if not ok_limit or limit_int is None or limit_int < 1:
+        return {
+            "status": "validation_error",
+            "error_code": "INVALID_LIMIT_CHAINS",
+            "message": "limit_chains must be >= 1 (max 8).",
+        }
+    limit_int = max(1, min(limit_int, 8))
+
     cfg = get_config()
     frames = load_local_state_frames(cfg["state"])
     prov = frames["providers"]
@@ -88,30 +443,23 @@ def audit_multihop_bounce_hubs(only_breaches: bool = True, limit_chains: int = 1
 
     iso_gql = _build_audit_iso_gql(cfg["dataset"], state_code=cfg["state"])
     bq_rows = graph_client.query_bq_or_none(iso_gql)
+    active_ds = graph_client.get_last_resolved_dataset(cfg) if bq_rows is not None else cfg["dataset"]
+    iso_gql = rewrite_sql_dataset(iso_gql, cfg["dataset"], active_ds)
     engine = (
-        f"bigquery_property_graph_iso_gql ({cfg['project']}.{cfg['dataset']}.ReferralGraph)"
+        f"bigquery_property_graph_iso_gql ({cfg['project']}.{active_ds}.ReferralGraph)"
         if bq_rows is not None
         else f"local_geoparquet_mirror ({cfg['state']} starter tables)"
     )
 
-    # Naive flat SQL sort (what misleads coordinators in a spreadsheet)
-    naive_top5 = (
-        prov.sort_values("active_waitlist_count", ascending=False)
-        .head(5)[
-            [
-                "provider_id",
-                "node_role",
-                "city",
-                "synthetic_organization_name",
-                "active_waitlist_count",
-                "median_internal_wait_days",
-                "bilingual_services_listed",
-            ]
-        ]
-        .to_dict(orient="records")
-    )
+    naive_top5 = [
+        {
+            "id": str(r["provider_id"]),
+            "wl": int(r["active_waitlist_count"]),
+            "wait_d": int(r["median_internal_wait_days"]),
+        }
+        for _, r in prov.sort_values("active_waitlist_count", ascending=False).head(5).iterrows()
+    ]
 
-    # Reconstruct complete prefix-deduplicated episodes
     episodes: list[dict[str, Any]] = []
     coord_stats: dict[str, dict[str, Any]] = {}
     bounce_sources: dict[str, dict[str, Any]] = {}
@@ -121,184 +469,141 @@ def audit_multihop_bounce_hubs(only_breaches: bool = True, limit_chains: int = 1
         grp_s = grp.sort_values("hop_sequence")
         n_hops = len(grp_s)
         total_w = int(grp_s["handoff_wait_days"].sum())
-        fax_cnt = int((grp_s["transmission_channel"] == "paper_fax").sum())
         coord_id = str(grp_s.iloc[0]["target_provider_id"])
         age_m = int(grp_s.iloc[0]["child_age_months"])
-        domain = str(grp_s.iloc[0]["concern_domain"])
-        tract = str(grp_s.iloc[0]["child_home_tract_geoid"])
 
-        # Track hop-depth summary
         hd = hop_depth_summary.setdefault(
             n_hops,
-            {"hops": n_hops, "episodes": 0, "breaches_over_45d": 0, "wait_sum": 0, "min_wait_d": 999, "max_wait_d": 0},
+            {"hops": n_hops, "episodes": 0, "breaches_over_45d": 0, "wait_sum": 0},
         )
         hd["episodes"] += 1
         hd["wait_sum"] += total_w
-        hd["min_wait_d"] = min(hd["min_wait_d"], total_w)
-        hd["max_wait_d"] = max(hd["max_wait_d"], total_w)
         if total_w > 45:
             hd["breaches_over_45d"] += 1
 
-        # Track Intake Coordinator multi-hop impact
         c_row = prov_by_id[coord_id]
         cs = coord_stats.setdefault(
             coord_id,
             {
                 "provider_id": coord_id,
-                "synthetic_organization_name": str(c_row["synthetic_organization_name"]),
                 "city": str(c_row["city"]),
                 "flat_active_waitlist": int(c_row["active_waitlist_count"]),
                 "flat_median_internal_wait_days": int(c_row["median_internal_wait_days"]),
                 "routed_episodes": 0,
-                "chains_3plus_hops": 0,
                 "breached_over_45d": 0,
                 "total_excess_days_over_45": 0,
-                "wait_sum": 0,
-                "outbound_paper_fax_edges": 0,
             },
         )
         cs["routed_episodes"] += 1
-        cs["wait_sum"] += total_w
-        if n_hops >= 3:
-            cs["chains_3plus_hops"] += 1
         if total_w > 45:
             cs["breached_over_45d"] += 1
             cs["total_excess_days_over_45"] += total_w - 45
-        if len(grp_s) >= 2 and str(grp_s.iloc[1]["transmission_channel"]) == "paper_fax":
-            cs["outbound_paper_fax_edges"] += 1
 
-        # Build full hop trace & capture explicit Re-Referral Bounce intermediary nodes
         hop_trace = []
-        cum_d = 0
-        bounce_reason = None
         for _, h in grp_s.iterrows():
             s_id = str(h["source_provider_id"])
             t_id = str(h["target_provider_id"])
             w = int(h["handoff_wait_days"])
-            cum_d += w
             reason = str(h["handoff_reason"])
-            is_b = reason.startswith("Re-Referral Bounce")
-            if is_b:
-                bounce_reason = reason
+            if reason.startswith("Re-Referral Bounce"):
                 b_node = prov_by_id[s_id]
                 bs = bounce_sources.setdefault(
                     s_id,
                     {
-                        "provider_id": s_id,
-                        "node_role": str(b_node["node_role"]),
-                        "synthetic_organization_name": str(b_node["synthetic_organization_name"]),
-                        "city": str(b_node["city"]),
-                        "bilingual_services_listed": bool(b_node["bilingual_services_listed"]),
-                        "active_waitlist_count": int(b_node["active_waitlist_count"]),
-                        "median_internal_wait_days": int(b_node["median_internal_wait_days"]),
-                        "bounce_count": 0,
-                        "bounce_reason": reason,
-                        "transmission_channel": str(h["transmission_channel"]),
+                        "id": s_id,
+                        "wait_d": int(b_node["median_internal_wait_days"]),
+                        "bounces": 0,
                     },
                 )
-                bs["bounce_count"] += 1
+                bs["bounces"] += 1
 
             hop_trace.append({
                 "hop_sequence": int(h["hop_sequence"]),
                 "source_provider_id": s_id,
-                "source_name": str(prov_by_id[s_id]["synthetic_organization_name"]),
-                "source_role": str(prov_by_id[s_id]["node_role"]),
                 "target_provider_id": t_id,
-                "target_name": str(prov_by_id[t_id]["synthetic_organization_name"]),
                 "target_role": str(prov_by_id[t_id]["node_role"]),
                 "transmission_channel": str(h["transmission_channel"]),
                 "handoff_wait_days": w,
-                "cumulative_wait_days": cum_d,
                 "handoff_reason": reason,
-                "is_bounce_hop": is_b,
             })
 
         episodes.append({
             "case_chain_id": str(cid),
-            "child_age_months": age_m,
-            "est_age_at_ifsp_months": round(age_m + total_w / 30.44, 1),
-            "near_36m_aging_out_cliff": age_m >= 30,
-            "concern_domain": domain,
-            "child_home_tract_geoid": tract,
-            "intake_coordinator_id": coord_id,
-            "total_hops": n_hops,
-            "paper_fax_hops": fax_cnt,
-            "total_wait_days": total_w,
-            "breached_45d": total_w > 45,
-            "days_over_45d": max(0, total_w - 45),
-            "bounce_reason": bounce_reason,
+            "age_m": age_m,
+            "wait_d": total_w,
             "hops": hop_trace,
         })
 
     coord_ranking = []
     for cs in coord_stats.values():
-        cs["mean_episode_wait_days"] = round(cs["wait_sum"] / max(1, cs["routed_episodes"]), 1)
         cs["breach_rate_pct"] = round(cs["breached_over_45d"] / max(1, cs["routed_episodes"]) * 100.0, 1)
-        del cs["wait_sum"]
         coord_ranking.append(cs)
     coord_ranking.sort(
         key=lambda x: (x["breached_over_45d"], x["total_excess_days_over_45"]),
         reverse=True,
     )
 
-    hop_table = []
-    for k in sorted(hop_depth_summary):
-        d = hop_depth_summary[k]
-        hop_table.append({
-            "hops": d["hops"],
-            "episodes": d["episodes"],
-            "avg_episode_wait_days": round(d["wait_sum"] / max(1, d["episodes"]), 1),
-            "min_wait_days": d["min_wait_d"],
-            "max_wait_days": d["max_wait_d"],
-            "breaches_over_45d": d["breaches_over_45d"],
-            "breach_rate_pct": round(d["breaches_over_45d"] / max(1, d["episodes"]) * 100.0, 1),
-        })
+    top_hub: dict[str, Any] | None = None
+    if coord_ranking:
+        top_cid = coord_ranking[0]["provider_id"]
+        top_hub = {
+            **coord_ranking[0],
+            "synthetic_organization_name": str(prov_by_id[top_cid]["synthetic_organization_name"]),
+        }
 
-    filtered_eps = [e for e in episodes if (not only_breaches or e["breached_45d"])]
+    hop_table = [
+        {
+            "hops": d["hops"],
+            "n": d["episodes"],
+            "wait_d": round(d["wait_sum"] / max(1, d["episodes"]), 1),
+            "breaches": d["breaches_over_45d"],
+        }
+        for _, d in sorted(hop_depth_summary.items())
+    ]
+
+    filtered_eps = [e for e in episodes if (not only_breaches_bool or e["wait_d"] > 45)]
     filtered_eps.sort(
-        key=lambda e: (e["near_36m_aging_out_cliff"], e["total_wait_days"]),
+        key=lambda e: (e["age_m"] >= 30, e["wait_d"]),
         reverse=True,
     )
 
-    # Channel comparison across all 149 edges
-    channel_stats = []
-    for ch, grp in logs.groupby("transmission_channel"):
-        channel_stats.append({
-            "transmission_channel": str(ch),
-            "handoff_edges": int(len(grp)),
-            "mean_wait_days": round(float(grp["handoff_wait_days"].mean()), 1),
-            "mean_family_dropoff_pct": round(float(grp["dropoff_rate_pct"].mean()) * 100.0, 1),
-        })
-    channel_stats.sort(key=lambda x: x["mean_wait_days"], reverse=True)
+    channel_stats = [
+        {
+            "ch": str(ch),
+            "n": int(len(grp)),
+            "wait_d": round(float(grp["handoff_wait_days"].mean()), 1),
+            "drop_pct": round(float(grp["dropoff_rate_pct"].mean()) * 100.0, 1),
+        }
+        for ch, grp in logs.groupby("transmission_channel")
+    ]
+    channel_stats.sort(key=lambda x: x["wait_d"], reverse=True)
 
+    breach_count = sum(1 for e in episodes if e["wait_d"] > 45)
     return {
         "execution_engine": engine,
         "state_code": cfg["state"],
-        "synthetic_provenance_notice": (
-            "100% [Synthetic] CareNode organizations (SYN-PROV-*) and ReferralHandoff chains; "
-            "prefix-deduplicated so Type B Vendor->Vendor 4-hop chains are counted once."
-        ),
+        "synthetic_provenance_notice": "100% [Synthetic] CareNode & ReferralHandoff chains.",
         "iso_gql_query": iso_gql,
         "network_totals": {
             "total_complete_chains": len(episodes),
-            "chains_3_to_4_hops": sum(1 for e in episodes if e["total_hops"] >= 3),
-            "statutory_breaches_over_45d": sum(1 for e in episodes if e["breached_45d"]),
+            "chains_3_to_4_hops": sum(1 for e in episodes if len(e["hops"]) >= 3),
+            "statutory_breaches_over_45d": breach_count,
             "overall_timely_45d_pct": round(
-                sum(1 for e in episodes if not e["breached_45d"]) / max(1, len(episodes)) * 100.0, 1
+                (len(episodes) - breach_count) / max(1, len(episodes)) * 100.0, 1
             ),
             "toddlers_30m_plus_in_breach": sum(
-                1 for e in episodes if e["breached_45d"] and e["near_36m_aging_out_cliff"]
+                1 for e in episodes if e["wait_d"] > 45 and e["age_m"] >= 30
             ),
         },
         "hop_depth_breakdown": hop_table,
         "transmission_channel_impact": channel_stats,
         "naive_flat_waitlist_top5_misleading": naive_top5,
         "intake_coordinator_bounce_hub_ranking": coord_ranking,
-        "top_hidden_bounce_hub": coord_ranking[0] if coord_ranking else None,
+        "top_hidden_bounce_hub": top_hub,
         "downstream_re_referral_bounce_triggers": sorted(
-            bounce_sources.values(), key=lambda x: x["bounce_count"], reverse=True
-        ),
-        "sample_traced_episodes": filtered_eps[: max(1, min(int(limit_chains), 20))],
+            bounce_sources.values(), key=lambda x: x["bounces"], reverse=True
+        )[:2],
+        "sample_traced_episodes": filtered_eps[:limit_int],
     }
 
 
@@ -312,10 +617,11 @@ def simulate_hub_intervention(
     Computes a counterfactual over traversed `ReferralHandoff` chains passing through
     `target_provider_id` (defaults to the state's #1 hidden Intake Coordinator bounce hub,
     e.g., `SYN-PROV-MS-011`, or `'ALL'` for statewide intake modernization):
-      1. Replacing `paper_fax` (`~19.5-21.7d` avg) with `ehr_electronic_portal` (`~12-13d`).
+      1. Replacing `paper_fax` (`~19.5-21.7d` avg) with `ehr_electronic_portal` (`~12-13d`)
+         on hops entering or exiting the targeted hub(s).
       2. Pre-verifying bilingual & Medicaid evaluation/therapy slot capacity at intake so
          cases route directly to underutilized fast hubs (`017..020`, `026..030`),
-         eliminating Hop-3 `Re-Referral Bounce` penalties (`21-25d`).
+         eliminating Hop-3/4 `Re-Referral Bounce` penalties (`21-25d`).
 
     Args:
         target_provider_id: Specific `SYN-PROV-*` ID (e.g. 'SYN-PROV-MS-011') or 'ALL'.
@@ -323,18 +629,42 @@ def simulate_hub_intervention(
         precheck_bilingual_and_slot_capacity: Simulate pre-handoff bilingual/Medicaid slot
             check to eliminate 4-hop re-referral bounces.
     """
+    raw_target = "" if target_provider_id is None else str(target_provider_id).strip()
+    upgrade_bool = _coerce_bool(upgrade_fax_to_ehr, default=True)
+    precheck_bool = _coerce_bool(precheck_bilingual_and_slot_capacity, default=True)
+
     cfg = get_config()
     frames = load_local_state_frames(cfg["state"])
     prov = frames["providers"]
     logs = frames["logs"]
     prov_by_id = {str(r["provider_id"]): r for _, r in prov.iterrows()}
+    valid_coord_ids = sorted(
+        pid for pid, r in prov_by_id.items() if str(r["node_role"]) == "Part_C_Intake_Coordinator"
+    )
 
-    # Default to top breaching intake coordinator (e.g. SYN-PROV-MS-011) if unspecified
-    target = target_provider_id.strip().upper()
+    target = raw_target.upper()
     if not target:
         audit = audit_multihop_bounce_hubs(only_breaches=True, limit_chains=1)
         top_hub = audit.get("top_hidden_bounce_hub")
-        target = top_hub["provider_id"] if top_hub else f"SYN-PROV-{cfg['state']}-011"
+        target = top_hub["provider_id"] if top_hub else (valid_coord_ids[0] if valid_coord_ids else "")
+    elif target != "ALL" and target not in prov_by_id:
+        return {
+            "status": "validation_error",
+            "error_code": "PROVIDER_NOT_FOUND_IN_ACTIVE_STATE",
+            "state_code": cfg["state"],
+            "target_provider_id": raw_target,
+            "valid_coordinator_ids": valid_coord_ids,
+            "message": (
+                f"target_provider_id '{raw_target}' was not found in active state '{cfg['state']}'. "
+                f"Use one of {valid_coord_ids} or 'ALL'."
+            ),
+        }
+
+    hub_meta = prov_by_id.get(target)
+    target_hub_set = set(valid_coord_ids) if target == "ALL" else {target}
+    target_is_coordinator = target == "ALL" or (
+        hub_meta is not None and str(hub_meta["node_role"]) == "Part_C_Intake_Coordinator"
+    )
 
     affected_chains: list[dict[str, Any]] = []
     baseline_breaches = 0
@@ -348,7 +678,7 @@ def simulate_hub_intervention(
         nodes_in_chain = set(grp_s["source_provider_id"].astype(str)).union(
             set(grp_s["target_provider_id"].astype(str))
         )
-        if target != "ALL" and target not in nodes_in_chain:
+        if not (nodes_in_chain & target_hub_set):
             continue
 
         base_wait = int(grp_s["handoff_wait_days"].sum())
@@ -356,17 +686,17 @@ def simulate_hub_intervention(
         bounce_saved = 0
 
         for _, h in grp_s.iterrows():
+            s_id = str(h["source_provider_id"])
+            t_id = str(h["target_provider_id"])
             w = int(h["handoff_wait_days"])
             reason = str(h["handoff_reason"])
             ch = str(h["transmission_channel"])
             is_bounce = reason.startswith("Re-Referral Bounce")
+            touches_target = (s_id in target_hub_set) or (t_id in target_hub_set)
 
-            if is_bounce and precheck_bilingual_and_slot_capacity:
-                # Eliminating the extra 4th-hop re-referral bounce + saturated queue penalty
+            if is_bounce and precheck_bool and (target_is_coordinator or touches_target):
                 bounce_saved += w
-                # Also accounts for routing into fast eval/vendor hub (7-11d) vs saturated hub (21-25d)
-            elif ch == "paper_fax" and upgrade_fax_to_ehr:
-                # Empirical EHR portal median wait is ~12-13 days vs ~20-23 days on paper_fax
+            elif ch == "paper_fax" and upgrade_bool and touches_target:
                 fax_saved += max(0, w - 12)
 
         saved = fax_saved + bounce_saved
@@ -393,9 +723,19 @@ def simulate_hub_intervention(
         })
 
     affected_chains.sort(key=lambda c: c["child_days_saved"], reverse=True)
-    hub_meta = prov_by_id.get(target)
+
+    clean_state = _clean_state_code(cfg["state"])
+    sim_gql = _build_audit_iso_gql(cfg["dataset"], state_code=clean_state)
+    bq_sim_rows = graph_client.query_bq_or_none(sim_gql)
+    active_ds = graph_client.get_last_resolved_dataset(cfg) if bq_sim_rows is not None else cfg["dataset"]
+    sim_engine = (
+        f"bigquery_property_graph_iso_gql ({cfg['project']}.{active_ds}.ReferralGraph)"
+        if bq_sim_rows is not None
+        else f"local_geoparquet_mirror ({cfg['state']} starter tables)"
+    )
 
     return {
+        "execution_engine": sim_engine,
         "state_code": cfg["state"],
         "target_intervention_scope": target,
         "target_organization_name": (
@@ -408,16 +748,16 @@ def simulate_hub_intervention(
                 "median_internal_wait_days": int(hub_meta["median_internal_wait_days"]),
                 "active_waitlist_count": int(hub_meta["active_waitlist_count"]),
                 "why_flat_sql_missed_it": (
-                    "Internal wait is only "
-                    f"{int(hub_meta['median_internal_wait_days'])} days, hiding downstream paper_fax & slot-mismatch bounces."
+                    f"Internal wait is only {int(hub_meta['median_internal_wait_days'])}d, "
+                    "hiding downstream paper_fax & slot-mismatch bounces."
                 ),
             }
             if hub_meta is not None
             else None
         ),
         "levers_applied": {
-            "upgrade_paper_fax_to_ehr_portal": upgrade_fax_to_ehr,
-            "precheck_bilingual_and_medicaid_slot_capacity": precheck_bilingual_and_slot_capacity,
+            "upgrade_paper_fax_to_ehr_portal": upgrade_bool,
+            "precheck_bilingual_and_medicaid_slot_capacity": precheck_bool,
         },
         "impact_summary": {
             "episodes_evaluated": len(affected_chains),
@@ -432,7 +772,8 @@ def simulate_hub_intervention(
             ),
             "total_delayed_child_days_saved": total_days_saved,
         },
-        "episode_level_simulation": affected_chains,
+        "total_episodes_simulated": len(affected_chains),
+        "episode_level_simulation": affected_chains[:5],
     }
 
 
@@ -441,96 +782,35 @@ def _build_bottleneck_hubs_gql(
     max_days: int = 45,
     state_code: str = "",
 ) -> str:
-    """Builds an ISO/IEC 39075 GQL query to rank intermediate bottleneck hubs by breach flow share."""
+    """Builds a concise ISO/IEC 39075 GQL query to rank intermediate bottleneck hubs."""
     max_days_int = int(max_days)
     clean_state = _clean_state_code(state_code)
-    state_filter = f"src.state_code = '{clean_state}'\n      AND " if clean_state else ""
-    return f"""-- Prefix-Safe Variable-Length ISO/IEC 39075 GQL Regional Bottleneck Hub Betweenness Query
-WITH complete_chains AS (
-  SELECT *
-  FROM GRAPH_TABLE(
-    {dataset}.ReferralGraph
-    MATCH (src:CareNode {{node_role: 'Screening_Pediatric_Clinic'}})
-          -[r:REFERS_TO]->{{2,4}}
-          (dest:CareNode {{node_role: 'EI_Therapy_Vendor'}})
-    WHERE {state_filter}r[OFFSET(0)].hop_sequence = 1
-      AND (SELECT COUNT(DISTINCT h.case_chain_id) FROM UNNEST(r) AS h) = 1
-    LET chain_id = r[OFFSET(0)].case_chain_id,
-        total_hops = ARRAY_LENGTH(r),
-        chain_wait_days = (SELECT SUM(h.handoff_wait_days) FROM UNNEST(r) AS h),
-        intermediate_hub_ids = ARRAY(
-          SELECT DISTINCT h.target_provider_id
-          FROM UNNEST(r) AS h WITH OFFSET AS idx
-          WHERE idx < ARRAY_LENGTH(r) - 1
-        ),
-        has_bounce = EXISTS(
-          SELECT 1 FROM UNNEST(r) AS h
-          WHERE STARTS_WITH(h.handoff_reason, 'Re-Referral Bounce')
-        ),
-        fax_hops = (SELECT COUNTIF(h.transmission_channel = 'paper_fax') FROM UNNEST(r) AS h),
-        chain_bounce_reason = (
-          SELECT ARRAY_AGG(h.handoff_reason ORDER BY h.hop_sequence ASC LIMIT 1)[SAFE_OFFSET(0)]
-          FROM UNNEST(r) AS h
-          WHERE STARTS_WITH(h.handoff_reason, 'Re-Referral Bounce')
-        )
-    RETURN
-      chain_id, total_hops, chain_wait_days, intermediate_hub_ids,
-      has_bounce, fax_hops, chain_bounce_reason
-  )
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY chain_id ORDER BY total_hops DESC) = 1
-),
-breached_chains AS (
-  SELECT *
-  FROM complete_chains
-  WHERE chain_wait_days > {max_days_int}
-),
-total_breached AS (
-  SELECT COUNT(*) AS total_breached_chains FROM breached_chains
-),
-hub_reason_counts AS (
-  SELECT
-    u_hub_id AS target_hub_id,
-    bc.chain_bounce_reason,
-    COUNT(DISTINCT bc.chain_id) AS reason_chains
-  FROM breached_chains AS bc
-  CROSS JOIN UNNEST(bc.intermediate_hub_ids) AS u_hub_id
-  WHERE bc.chain_bounce_reason IS NOT NULL
-  GROUP BY target_hub_id, bc.chain_bounce_reason
-),
-hub_top_reason AS (
-  SELECT
-    target_hub_id,
-    ARRAY_AGG(
-      chain_bounce_reason
-      ORDER BY reason_chains DESC, chain_bounce_reason ASC
-      LIMIT 1
-    )[SAFE_OFFSET(0)] AS primary_bounce_reason
-  FROM hub_reason_counts
-  GROUP BY target_hub_id
-)
-SELECT
-  hub_id AS provider_id,
-  COUNT(DISTINCT bc.chain_id) AS breached_paths_through_hub,
-  ROUND(
-    COUNT(DISTINCT bc.chain_id) * 100.0 / NULLIF(MAX(tb.total_breached_chains), 0),
-    1
-  ) AS betweenness_flow_share_pct,
-  ROUND(
-    COUNTIF(bc.has_bounce) * 100.0 / NULLIF(COUNT(*), 0),
-    1
-  ) AS bounce_rate_pct,
-  ROUND(
-    COUNTIF(bc.fax_hops > 0) * 100.0 / NULLIF(COUNT(*), 0),
-    1
-  ) AS paper_fax_share_pct,
-  MAX(htr.primary_bounce_reason) AS primary_bounce_reason
-FROM breached_chains AS bc
-CROSS JOIN total_breached AS tb
-CROSS JOIN UNNEST(bc.intermediate_hub_ids) AS hub_id
-LEFT JOIN hub_top_reason AS htr
-  ON hub_id = htr.target_hub_id
-GROUP BY hub_id
-ORDER BY betweenness_flow_share_pct DESC, breached_paths_through_hub DESC, provider_id ASC;""".strip()
+    state_filter = f"src.state_code='{clean_state}' AND " if clean_state else ""
+    return (
+        f"WITH chains AS (SELECT * FROM GRAPH_TABLE({dataset}.ReferralGraph\n"
+        "  MATCH (src:CareNode {node_role:'Screening_Pediatric_Clinic'})-[r:REFERS_TO]->{2,4}"
+        "(dest:CareNode {node_role:'EI_Therapy_Vendor'})\n"
+        f"  WHERE {state_filter}r[OFFSET(0)].hop_sequence=1 "
+        "AND (SELECT COUNT(DISTINCT h.case_chain_id) FROM UNNEST(r) h)=1\n"
+        "  LET id=r[OFFSET(0)].case_chain_id, hops=ARRAY_LENGTH(r),\n"
+        "      wait_d=(SELECT SUM(h.handoff_wait_days) FROM UNNEST(r) h),\n"
+        "      hubs=ARRAY(SELECT DISTINCT h.target_provider_id FROM UNNEST(r) h WITH OFFSET i WHERE i<ARRAY_LENGTH(r)-1),\n"
+        "      fax=(SELECT COUNTIF(h.transmission_channel='paper_fax') FROM UNNEST(r) h),\n"
+        "      rsn=(SELECT ARRAY_AGG(h.handoff_reason ORDER BY h.hop_sequence LIMIT 1)[SAFE_OFFSET(0)] "
+        "FROM UNNEST(r) h WHERE STARTS_WITH(h.handoff_reason,'Re-Referral Bounce'))\n"
+        "  RETURN id, hops, wait_d, hubs, fax, rsn) "
+        "QUALIFY ROW_NUMBER() OVER(PARTITION BY id ORDER BY hops DESC)=1),\n"
+        f"bc AS (SELECT * FROM chains WHERE wait_d>{max_days_int}),\n"
+        "tr AS (SELECT hub_id, ARRAY_AGG(rsn ORDER BY c DESC, rsn LIMIT 1)[SAFE_OFFSET(0)] AS primary_bounce_reason\n"
+        "  FROM (SELECT hub_id, rsn, COUNT(DISTINCT id) c FROM bc, UNNEST(hubs) hub_id WHERE rsn IS NOT NULL GROUP BY 1,2) GROUP BY 1)\n"
+        "SELECT hub_id AS provider_id, COUNT(DISTINCT bc.id) AS breached_paths_through_hub,\n"
+        "  ROUND(COUNT(DISTINCT bc.id)*100.0/NULLIF((SELECT COUNT(*) FROM bc),0),1) AS betweenness_flow_share_pct,\n"
+        "  ROUND(COUNTIF(bc.rsn IS NOT NULL)*100.0/NULLIF(COUNT(*),0),1) AS bounce_rate_pct,\n"
+        "  ROUND(COUNTIF(bc.fax>0)*100.0/NULLIF(COUNT(*),0),1) AS paper_fax_share_pct,\n"
+        "  MAX(tr.primary_bounce_reason) AS primary_bounce_reason\n"
+        "FROM bc, UNNEST(bc.hubs) hub_id LEFT JOIN tr USING(hub_id) GROUP BY 1 "
+        "ORDER BY 3 DESC, 2 DESC, 1;"
+    )
 
 
 def _provider_matches_region(prov_row: Any, region_norm: str) -> bool:
@@ -559,113 +839,137 @@ def detect_regional_bottleneck_hubs(
 
     Args:
         region: Region filter (`'ALL'` or a `county_name`, `city`, or `state_code` value).
-        max_days: Statutory wait-day threshold above which a chain is counted as breached.
-        top_n: Maximum number of ranked intermediate bottleneck hubs to return.
+        max_days: Statutory wait-day threshold (`1..180`) above which a chain is breached.
+        top_n: Maximum number of ranked intermediate bottleneck hubs to return (`1..10`).
     """
-    max_days_int = int(max_days)
+    max_days_int, ok_days = _parse_int_param(max_days, default=45)
+    if not ok_days or max_days_int is None or max_days_int < 1 or max_days_int > 180:
+        return {
+            "status": "validation_error",
+            "error_code": "INVALID_MAX_DAYS",
+            "message": "max_days must be an integer between 1 and 180.",
+        }
+
+    top_n_int, ok_top = _parse_int_param(top_n, default=5)
+    if not ok_top or top_n_int is None or top_n_int < 1:
+        return {
+            "status": "validation_error",
+            "error_code": "INVALID_TOP_N",
+            "message": "top_n must be >= 1 (max 10).",
+        }
+    top_n_int = min(top_n_int, 10)
+
     cfg = get_config()
     frames = load_local_state_frames(cfg["state"])
     prov = frames["providers"]
     logs = frames["logs"]
     prov_by_id = {str(r["provider_id"]): r for _, r in prov.iterrows()}
 
-    region_norm = region.strip() if region and region.strip() else "ALL"
+    raw_region = "" if region is None else str(region).strip()
+    region_norm = raw_region if raw_region else "ALL"
     is_regional = region_norm.upper() != "ALL"
+    any_region_provider = (
+        True
+        if not is_regional
+        else any(_provider_matches_region(p_meta, region_norm) for p_meta in prov_by_id.values())
+    )
+
     gql_query = _build_bottleneck_hubs_gql(
         cfg["dataset"],
         max_days=max_days_int,
         state_code=cfg["state"],
     )
     bq_rows = graph_client.query_bq_or_none(gql_query)
+    active_ds = graph_client.get_last_resolved_dataset(cfg) if bq_rows is not None else cfg["dataset"]
+    gql_query = rewrite_sql_dataset(gql_query, cfg["dataset"], active_ds)
     engine = (
-        f"bigquery_property_graph_iso_gql ({cfg['project']}.{cfg['dataset']}.ReferralGraph)"
+        f"bigquery_property_graph_iso_gql ({cfg['project']}.{active_ds}.ReferralGraph)"
         if bq_rows is not None
         else f"local_geoparquet_mirror ({cfg['state']} starter tables)"
     )
 
-    # Compute exact regional breached chains & local hub statistics across 2-4 hop
-    # Screening_Pediatric_Clinic -> EI_Therapy_Vendor trajectories so BQ and local
-    # GeoParquet share the exact same regional denominator.
     total_breached_chains = 0
     hub_acc: dict[str, dict[str, Any]] = {}
 
-    for _, grp in logs.groupby("case_chain_id"):
-        grp_s = grp.sort_values("hop_sequence")
-        n_hops = len(grp_s)
-        if not (2 <= n_hops <= 4) or int(grp_s.iloc[0]["hop_sequence"]) != 1:
-            continue
+    if any_region_provider:
+        for _, grp in logs.groupby("case_chain_id"):
+            grp_s = grp.sort_values("hop_sequence")
+            n_hops = len(grp_s)
+            if not (2 <= n_hops <= 4) or int(grp_s.iloc[0]["hop_sequence"]) != 1:
+                continue
 
-        src_id = str(grp_s.iloc[0]["source_provider_id"])
-        dest_id = str(grp_s.iloc[-1]["target_provider_id"])
-        src_meta = prov_by_id.get(src_id)
-        dest_meta = prov_by_id.get(dest_id)
-        if src_meta is None or dest_meta is None:
-            continue
-        if (
-            str(src_meta["node_role"]) != "Screening_Pediatric_Clinic"
-            or str(dest_meta["node_role"]) != "EI_Therapy_Vendor"
-        ):
-            continue
-
-        chain_wait_days = int(grp_s["handoff_wait_days"].sum())
-        if chain_wait_days <= max_days_int:
-            continue
-
-        # Non-terminal hop targets are intermediate hubs along the 2-4 hop path.
-        intermediate_ids = list(
-            dict.fromkeys(str(h["target_provider_id"]) for _, h in grp_s.iloc[:-1].iterrows())
-        )
-        matching_hubs = [
-            hid
-            for hid in intermediate_ids
-            if hid in prov_by_id and _provider_matches_region(prov_by_id[hid], region_norm)
-        ]
-        if is_regional and not matching_hubs:
-            chain_nodes = set(grp_s["source_provider_id"].astype(str)).union(
-                set(grp_s["target_provider_id"].astype(str))
-            )
-            if not any(
-                nid in prov_by_id and _provider_matches_region(prov_by_id[nid], region_norm)
-                for nid in chain_nodes
+            src_id = str(grp_s.iloc[0]["source_provider_id"])
+            dest_id = str(grp_s.iloc[-1]["target_provider_id"])
+            src_meta = prov_by_id.get(src_id)
+            dest_meta = prov_by_id.get(dest_id)
+            if src_meta is None or dest_meta is None:
+                continue
+            if (
+                str(src_meta["node_role"]) != "Screening_Pediatric_Clinic"
+                or str(dest_meta["node_role"]) != "EI_Therapy_Vendor"
             ):
                 continue
 
-        total_breached_chains += 1
-        if bq_rows is not None:
-            continue
+            chain_wait_days = int(grp_s["handoff_wait_days"].sum())
+            if chain_wait_days <= max_days_int:
+                continue
 
-        bounce_reasons = [
-            str(h["handoff_reason"])
-            for _, h in grp_s.iterrows()
-            if str(h["handoff_reason"]).startswith("Re-Referral Bounce")
-        ]
-        chain_bounce_reason = bounce_reasons[0] if bounce_reasons else None
-        has_bounce = chain_bounce_reason is not None
-        has_paper_fax = bool((grp_s["transmission_channel"] == "paper_fax").any())
-
-        for hid in matching_hubs:
-            p_meta = prov_by_id[hid]
-            acc = hub_acc.setdefault(
-                hid,
-                {
-                    "provider_id": hid,
-                    "organization_name": str(p_meta["synthetic_organization_name"]),
-                    "node_role": str(p_meta["node_role"]),
-                    "flat_internal_wait_days": int(p_meta["median_internal_wait_days"]),
-                    "breached_paths_through_hub": 0,
-                    "bounce_chains": 0,
-                    "fax_chains": 0,
-                    "bounce_reasons": Counter(),
-                },
+            intermediate_ids = list(
+                dict.fromkeys(str(h["target_provider_id"]) for _, h in grp_s.iloc[:-1].iterrows())
             )
-            acc["breached_paths_through_hub"] += 1
-            if has_bounce and chain_bounce_reason is not None:
-                acc["bounce_chains"] += 1
-                acc["bounce_reasons"][chain_bounce_reason] += 1
-            if has_paper_fax:
-                acc["fax_chains"] += 1
+            matching_hubs = [
+                hid
+                for hid in intermediate_ids
+                if hid in prov_by_id and _provider_matches_region(prov_by_id[hid], region_norm)
+            ]
+            if is_regional and not matching_hubs:
+                chain_nodes = set(grp_s["source_provider_id"].astype(str)).union(
+                    set(grp_s["target_provider_id"].astype(str))
+                )
+                if not any(
+                    nid in prov_by_id and _provider_matches_region(prov_by_id[nid], region_norm)
+                    for nid in chain_nodes
+                ):
+                    continue
 
-    if bq_rows is not None:
+            total_breached_chains += 1
+            if bq_rows is not None:
+                continue
+
+            bounce_reasons = [
+                str(h["handoff_reason"])
+                for _, h in grp_s.iterrows()
+                if str(h["handoff_reason"]).startswith("Re-Referral Bounce")
+            ]
+            chain_bounce_reason = bounce_reasons[0] if bounce_reasons else None
+            has_bounce = chain_bounce_reason is not None
+            has_paper_fax = bool((grp_s["transmission_channel"] == "paper_fax").any())
+
+            for hid in matching_hubs:
+                p_meta = prov_by_id[hid]
+                acc = hub_acc.setdefault(
+                    hid,
+                    {
+                        "provider_id": hid,
+                        "organization_name": str(p_meta["synthetic_organization_name"]),
+                        "node_role": str(p_meta["node_role"]),
+                        "flat_internal_wait_days": int(p_meta["median_internal_wait_days"]),
+                        "breached_paths_through_hub": 0,
+                        "bounce_chains": 0,
+                        "fax_chains": 0,
+                        "bounce_reasons": Counter(),
+                    },
+                )
+                acc["breached_paths_through_hub"] += 1
+                if has_bounce and chain_bounce_reason is not None:
+                    acc["bounce_chains"] += 1
+                    acc["bounce_reasons"][chain_bounce_reason] += 1
+                if has_paper_fax:
+                    acc["fax_chains"] += 1
+
+    if not any_region_provider:
+        bottleneck_hubs: list[dict[str, Any]] = []
+    elif bq_rows is not None:
         filtered_bq: list[dict[str, Any]] = []
         for row in bq_rows:
             pid = str(row["provider_id"])
@@ -696,7 +1000,7 @@ def detect_regional_bottleneck_hubs(
                 x["provider_id"],
             )
         )
-        bottleneck_hubs = filtered_bq[: max(1, int(top_n))]
+        bottleneck_hubs = filtered_bq[:top_n_int]
     else:
         ranked_hubs: list[dict[str, Any]] = []
         for acc in hub_acc.values():
@@ -727,7 +1031,7 @@ def detect_regional_bottleneck_hubs(
                 x["provider_id"],
             )
         )
-        bottleneck_hubs = ranked_hubs[: max(1, int(top_n))]
+        bottleneck_hubs = ranked_hubs[:top_n_int]
 
     if bottleneck_hubs:
         top = bottleneck_hubs[0]
@@ -742,53 +1046,50 @@ def detect_regional_bottleneck_hubs(
                 next((h for h in bottleneck_hubs if h["flat_internal_wait_days"] <= 10), None),
             )
             coord_clause = (
-                f" Meanwhile, flat waitlist sorting misses low-internal-wait hub "
+                f" Meanwhile, flat waitlist sorting misses low-wait hub "
                 f"{low_wait_coord['organization_name']} ({low_wait_coord['provider_id']}, "
-                f"{low_wait_coord['node_role']}, {low_wait_coord['flat_internal_wait_days']}d internal wait), "
-                f"which routes {low_wait_coord['betweenness_flow_share_pct']}% "
-                f"({low_wait_coord['breached_paths_through_hub']}/{total_breached_chains}) of breached chains "
-                f"({low_wait_coord['paper_fax_share_pct']}% paper_fax, {low_wait_coord['bounce_rate_pct']}% bounce rate)."
+                f"{low_wait_coord['flat_internal_wait_days']}d internal wait), routing "
+                f"{low_wait_coord['betweenness_flow_share_pct']}% "
+                f"({low_wait_coord['breached_paths_through_hub']}/{total_breached_chains}) of breached chains."
                 if low_wait_coord is not None
-                else (
-                    " Unlike low-internal-wait Part_C_Intake_Coordinator bounce hubs (<=10d internal wait), "
-                    "this intermediate node combines high internal queue backlog with multi-hop re-referral bounce loops."
-                )
+                else ""
             )
             key_finding = (
-                f"High-wait intermediate node {top['organization_name']} ({top['provider_id']}, "
-                f"{top['node_role']}, {top['flat_internal_wait_days']}d internal wait) sits on "
+                f"Intermediate hub {top['organization_name']} ({top['provider_id']}, "
+                f"{top['node_role']}, {top['flat_internal_wait_days']}d internal wait) carries "
                 f"{top['betweenness_flow_share_pct']}% ({top['breached_paths_through_hub']}/"
-                f"{total_breached_chains}) of breached >{max_days_int}-day 2-4 hop chains via downstream "
-                f"re-referral bounce loops ({top['paper_fax_share_pct']}% paper_fax, "
-                f"{top['bounce_rate_pct']}% bounce rate)."
+                f"{total_breached_chains}) of breached >{max_days_int}d chains "
+                f"({top['paper_fax_share_pct']}% paper_fax, {top['bounce_rate_pct']}% bounce)."
                 f"{coord_clause}"
             )
         else:
             key_finding = (
                 f"Flat waitlist sorting misses {top['organization_name']} ({top['provider_id']}, "
-                f"{top['node_role']}) because its internal wait is only "
-                f"{top['flat_internal_wait_days']} days, yet it sits on "
+                f"{top['node_role']}) at {top['flat_internal_wait_days']}d internal wait, yet it carries "
                 f"{top['betweenness_flow_share_pct']}% ({top['breached_paths_through_hub']}/"
-                f"{total_breached_chains}) of breached >{max_days_int}-day 2-4 hop chains "
-                f"({top['paper_fax_share_pct']}% paper_fax, {top['bounce_rate_pct']}% bounce rate)."
+                f"{total_breached_chains}) of breached >{max_days_int}d chains "
+                f"({top['paper_fax_share_pct']}% paper_fax, {top['bounce_rate_pct']}% bounce)."
             )
+    elif not any_region_provider:
+        key_finding = (
+            f"No CareNode providers in active state '{cfg['state']}' matched region={region_norm!r}; "
+            "see valid_regions_hint for valid county_name and city filters."
+        )
     elif total_breached_chains > 0:
         key_finding = (
-            f"{total_breached_chains} breached 2-4 hop chain(s) (>{max_days_int} days) touched "
-            f"region={region_norm!r} via local origin/terminal clinics, while the intermediate "
-            f"Part_C_Intake_Coordinator and bounce hubs driving those delays sit in adjacent "
-            f"counties/cities (re-run with region='ALL' to inspect statewide intermediate hubs)."
+            f"{total_breached_chains} breached 2-4 hop chain(s) (>{max_days_int}d) touched "
+            f"region={region_norm!r}, while intermediate bounce hubs sit in adjacent counties/cities "
+            "(re-run with region='ALL' to inspect statewide hubs)."
         )
     else:
         key_finding = (
             f"No breached 2-4 hop chains (>{max_days_int} days) matched region={region_norm!r}."
         )
 
-    return {
+    result: dict[str, Any] = {
         "engine": engine,
         "synthetic_provenance_notice": (
-            "100% [Synthetic] CareNode organizations (SYN-PROV-*) and ReferralGraph "
-            "de-identified referral handoff logs; prefix-deduplicated across 2-4 hop chains."
+            "100% [Synthetic] CareNode (SYN-PROV-*) & ReferralGraph handoff logs; prefix-deduplicated."
         ),
         "iso_gql_query": gql_query,
         "region": region_norm,
@@ -797,3 +1098,22 @@ def detect_regional_bottleneck_hubs(
         "bottleneck_hubs": bottleneck_hubs,
         "key_finding": key_finding,
     }
+    if is_regional and not any_region_provider:
+        result["valid_regions_hint"] = {
+            "state_code": cfg["state"],
+            "counties": sorted(
+                {
+                    str(r["county_name"]).strip()
+                    for _, r in prov.iterrows()
+                    if str(r.get("county_name", "")).strip()
+                }
+            ),
+            "cities": sorted(
+                {
+                    str(r["city"]).strip()
+                    for _, r in prov.iterrows()
+                    if str(r.get("city", "")).strip()
+                }
+            ),
+        }
+    return result

@@ -21,6 +21,7 @@ credentials.json
 # OS
 .DS_Store
 Thumbs.db
+agent/.runtime/
 
 # Ad-hoc scratch exports (keep starter data/*.parquet tracked)
 *.parquet

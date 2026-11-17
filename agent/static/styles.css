@@ -502,6 +502,27 @@ code {
   overflow-wrap: anywhere;
 }
 
+.subagent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  background: var(--teal-soft);
+  color: var(--teal-dark);
+  border: 1px solid var(--teal-border);
+  padding: 2px 8px;
+  border-radius: 4px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.msg-agent-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* Chat Composer */
 .chat-form {
   padding: var(--space-3) var(--space-4);
@@ -913,6 +934,127 @@ code {
 
 .lane-meta-compliant {
   color: var(--teal);
+}
+
+/* ==========================================================================
+   Cytoscape.js Interactive Multi-Hop Referral Topology Card
+   ========================================================================== */
+.cy-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.cy-filter-btn {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  color: var(--ink-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.cy-filter-btn:hover {
+  background: var(--sky-tint);
+  border-color: var(--sky);
+  color: var(--sky-hover);
+}
+
+.cy-filter-btn.active {
+  background: var(--sky-selected);
+  border-color: var(--sky);
+  color: var(--sky-hover);
+}
+
+.cy-legend-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: var(--space-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.cy-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cy-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.cy-swatch-coord {
+  background-color: #0F766E;
+}
+
+.cy-swatch-compliant {
+  background-color: #15803D;
+}
+
+.cy-swatch-bounce {
+  background-color: #B91C1C;
+}
+
+.cy-swatch-viable {
+  background-color: #334155;
+}
+
+.cy-graph-canvas {
+  width: 100%;
+  max-width: 100%;
+  height: 300px;
+  background: #F8FAFC;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Borderless surface inside .card to keep bordered ancestor depth <= 2 */
+.cy-node-inspector {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-subtle);
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--ink-primary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.cy-node-inspector code {
+  background: var(--bg-surface);
+  color: var(--ink-primary);
+}
+
+.cy-inspector-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 /* ==========================================================================
@@ -1583,6 +1725,370 @@ code {
 }
 
 /* ==========================================================================
+   Toolbar Actions, Counterfactual Intake Strip, Gatekeeper, Maps & Print
+   ========================================================================== */
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.badge-warn {
+  background: var(--warn-tint);
+  color: var(--warn-ink);
+  border: 1px solid var(--warn-border);
+}
+
+.intake-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.intake-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.intake-field-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ink-secondary);
+}
+
+.intake-field select {
+  min-height: 44px;
+  width: 100%;
+  max-width: 100%;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  color: var(--ink-primary);
+  background: var(--bg-surface);
+}
+
+.intake-slider-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.intake-age-val {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--teal-dark);
+}
+
+#intakeAgeSlider {
+  width: 100%;
+  min-height: 44px;
+  height: 44px;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
+.intake-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.intake-toggles,
+.gatekeeper-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.toggle-chip {
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--ink-secondary);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.toggle-chip:hover {
+  background: var(--sky-tint);
+  border-color: var(--sky);
+  color: var(--sky-hover);
+}
+
+.toggle-chip.active {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+  color: var(--teal-dark);
+}
+
+.gatekeeper-result {
+  background: var(--bg-subtle);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.875rem;
+  color: var(--ink-primary);
+}
+
+.gatekeeper-top-row,
+.gatekeeper-blockers {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tiger-legend-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.cy-swatch-sky {
+  background-color: #0369A1;
+}
+
+.tiger-map-wrap {
+  width: 100%;
+  max-width: 100%;
+  background: #F8FAFC;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.tiger-map-svg {
+  width: 100%;
+  height: auto;
+  max-height: 320px;
+  display: block;
+}
+
+.tiger-tract {
+  cursor: pointer;
+  transition: opacity 0.14s ease, stroke-width 0.14s ease;
+}
+
+.tiger-tract:hover {
+  opacity: 0.88;
+}
+
+.desert-inspector-bar {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-subtle);
+  border: none;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.desert-inspector-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 0.8125rem;
+  color: var(--ink-primary);
+  overflow-wrap: anywhere;
+}
+
+.rec-slot-bar {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.rec-capacity-chip {
+  flex: 1 1 260px;
+  min-width: 0;
+  background: var(--bg-subtle);
+  color: var(--ink-primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.slot-hold-status {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--teal-tint);
+  border-left: 4px solid var(--teal);
+  border-radius: var(--radius-sm);
+  color: var(--teal-dark);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.hop-reason-note {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--breach-dark);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.viable-summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.viable-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
+  color: var(--teal-dark);
+}
+
+.viable-list-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.viable-path-row {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.viable-path-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.viable-nodes {
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.viable-eval-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.viable-path-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sim-quick-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tag-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.data-table tbody tr.row-highlight-danger {
+  background: var(--breach-tint);
+}
+
+.data-table tbody tr.row-highlight-warn {
+  background: var(--warn-tint);
+}
+
+.gql-telemetry-bar {
+  padding: var(--space-2) var(--space-5);
+  background: var(--sky-tint);
+  border-bottom: 1px solid var(--sky-border);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: 0.75rem;
+  color: var(--sky-hover);
+}
+
+.telemetry-job-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--sky-border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-primary);
+}
+
+.telemetry-engine-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--teal-soft);
+  border: 1px solid var(--teal-border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--teal-dark);
+}
+
+/* ==========================================================================
    Responsive Breakpoints (1440px, 1024px, 768px, 390px)
    ========================================================================== */
 @media (max-width: 1023px) {
@@ -1608,6 +2114,10 @@ code {
 
   .two-col-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .intake-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1643,6 +2153,14 @@ code {
   .workspace-header {
     padding: var(--space-4);
   }
+
+  .cy-graph-canvas {
+    height: 250px;
+  }
+
+  .intake-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 479px) {
@@ -1653,15 +2171,73 @@ code {
   .btn-primary,
   .workspace-tab,
   .sim-controls select,
-  .sim-controls button {
+  .sim-controls button,
+  .toolbar-actions button {
     width: 100%;
   }
 
-  .workspace-tabs {
+  .workspace-tabs,
+  .toolbar-actions {
     width: 100%;
   }
 
   .btn-gql {
     width: 100%;
+  }
+
+  .cy-filter-bar {
+    width: 100%;
+  }
+
+  .cy-filter-btn {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    white-space: normal;
+    text-align: center;
+  }
+}
+
+/* ==========================================================================
+   Print / PDF Brief Stylesheet
+   ========================================================================== */
+@media print {
+  body {
+    background: #FFFFFF;
+    color: #0F172A;
+  }
+
+  .topbar,
+  .copilot-pane,
+  .workspace-toolbar,
+  .intake-actions-row,
+  .gatekeeper-controls,
+  .cy-filter-bar,
+  .caregiver-actions,
+  .sim-controls,
+  .sim-quick-actions,
+  #reserveSlotBtn,
+  #routeSelectedTractBtn,
+  #gqlModal {
+    display: none !important;
+  }
+
+  .workbench {
+    display: block;
+  }
+
+  .triage-workspace {
+    padding: 0;
+  }
+
+  .card,
+  .hop-card,
+  .workspace-header {
+    box-shadow: none;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .tab-panel[hidden] {
+    display: none !important;
   }
 }

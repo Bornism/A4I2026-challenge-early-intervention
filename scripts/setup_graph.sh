@@ -108,7 +108,7 @@ SELECT
 FROM traversed;
 "
 
-info "Verifying Neighborhood, SERVES_AREA, and REFERS_TO graph tables"
+info "Verifying Neighborhood, SERVES_AREA, REFERS_TO, and CAN_REFER_TO graph tables"
 bq --project_id="${PROJECT_ID}" --location="${LOCATION}" query --use_legacy_sql=false --format=pretty "
 WITH serves AS (
   SELECT *
@@ -125,12 +125,22 @@ refers AS (
     MATCH (a:CareNode)-[r:REFERS_TO]->(b:CareNode)
     RETURN r.referral_event_id, r.bounce_flag
   )
+),
+can_refer AS (
+  SELECT *
+  FROM GRAPH_TABLE(
+    ${DATASET}.ReferralGraph
+    MATCH (a:CareNode)-[c:CAN_REFER_TO]->(b:CareNode)
+    RETURN c.can_refer_edge_id, c.relationship_type, c.expected_step_days
+  )
 )
 SELECT
   (SELECT COUNT(DISTINCT tract_geoid) FROM serves) AS served_neighborhoods,
   (SELECT COUNT(*) FROM serves) AS total_serves_area_edges,
   (SELECT COUNT(*) FROM refers) AS total_refers_to_edges,
-  (SELECT CAST(SUM(bounce_flag) AS INT64) FROM refers) AS bounce_edges;
+  (SELECT CAST(SUM(bounce_flag) AS INT64) FROM refers) AS bounce_edges,
+  (SELECT COUNT(*) FROM can_refer) AS total_can_refer_to_edges,
+  (SELECT COUNTIF(relationship_type = 'observed_clean_corridor') FROM can_refer) AS observed_clean_corridor_edges;
 "
 
 bold "BigQuery Property Graph ${DATASET}.ReferralGraph is live and verified."

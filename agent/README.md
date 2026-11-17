@@ -1,50 +1,59 @@
-# First Milestones — Python ADK Agent, Managed MCP & Coordinator Workbench
+# First Milestones — Multi-Agent ADK System, BigQuery Property Graph & Coordinator Workbench
 
 Built for **Agents for Impact 2026 · Challenge 04: Early Intervention & Developmental Screening Triage**.
 
 ## Architecture Summary
 
-- **Python ADK Agent (`first_milestones/agent.py`):** Root `LlmAgent` (`first_milestones_coordinator`) powered by **Gemini 2.5 Pro** (`A4I_GEMINI_MODEL=gemini-2.5-pro`) with statutory 45-day IDEA Part C (`34 CFR § 303.310`), 36-month aging-out cliff, zero-vehicle NEMT, and `100% [Synthetic]` stage-safety guardrails.
-- **BigQuery Property Graph Differentiator (`first_milestones/tools/`):**
-  - `find_compliant_45d_pathways` (`graph_routing.py`): Prospective `<=45`-day multi-hop pathway routing (`Clinic -> Coordinator -> Eval Hub -> Therapy Vendor`) combining `GRAPH_TABLE` ISO GQL with native `ST_DISTANCE` spatial proximity, Medicaid/Part C/bilingual hard filters, 36-month aging-out cliff checks, and zero-vehicle mobility guardrails (strictly excluding `audit_*` and all-zero `limited_english_rate`).
-  - `audit_multihop_bounce_hubs` & `simulate_hub_intervention` (`graph_audit.py`): Variable-length `-{2,4}->` ISO GQL traversal correlated on `case_chain_id` and prefix-deduplicated (preventing Type B `Vendor -> Vendor` 3-hop prefix double-counting), plus counterfactual `paper_fax` -> `ehr_electronic_portal` child-days-saved simulation.
-  - `run_post_output_equity_audit` & `prioritize_community_screening_tracts` (`equity_audit.py`): Post-output join to ACS `audit_*` demographic shares, zero-vehicle mobility disparity analysis, and statewide-only HRSA NSCH screening context (`6` statewide strata, zero 6x tract fan-out).
-- **Google-Managed MCP Integration (`tools.yaml` + `mcp_integration.py`):**
-  - Connects automatically to **Google MCP Toolbox for Databases** (`googleapis/mcp-toolbox` via ADK `ToolboxToolset` using `agent/tools.yaml`) inside Cloud Run, or to **BigQuery's Built-in Remote Managed MCP Server** (`https://bigquery.googleapis.com/mcp` via ADK `McpToolset` + Google ADC headers).
-- **Split-Pane Coordinator Workbench UI (`main.py` + `static/`):**
-  - Designed for internal state/regional IDEA Part C Intake & Quality Coordinators: live ADK chat + preset scenarios on the left, paired with a visual Multi-Hop Path Comparator (4-hop red `paper_fax` bounce vs. `<=45`-day green electronic pathway), 45-day clock meter, counterfactual simulator, Post-Output Equity Audit, and toggleable **English / Español** Caregiver Action Notes on the right.
+### 1. Hierarchical Multi-Agent ADK Architecture (`first_milestones/agent.py` + `schemas.py`)
+- **Root Orchestrator (`first_milestones_coordinator`):** Powered by Gemini Pro / Argon (`A4I_GEMINI_MODEL`, automatic fallback cascade via `A4I_GEMINI_FALLBACK_MODELS`), enforcing statutory **45-day IDEA Part C (`34 CFR § 303.310`)**, **36-month aging-out cliff**, zero-vehicle **Medicaid NEMT**, zero-race-input routing, and `100% [Synthetic]` stage-safety guardrails.
+- **3 Specialist `gemini-2.5-flash` Sub-Agents (`A4I_SUBAGENT_MODEL=gemini-2.5-flash`):**
+  1. `triage_pathway_router` — Executes prospective `<=45`-day multi-hop pathway routing (`Clinic -> Coordinator -> Eval Hub -> Therapy Vendor`) with spatial `ST_DISTANCE`, Medicaid/Part C/bilingual hard filters, and 36-month cliff buffers.
+  2. `network_bottleneck_auditor` — Runs variable-length `-{2,4}->` ISO GQL bounce audits correlated on `case_chain_id` (prefix-deduplicated to eliminate 3-hop Type B double-counting) and simulates `paper_fax -> ehr_electronic_portal` counterfactual interventions.
+  3. `equity_and_caregiver_specialist` — Performs strictly post-output neighborhood equity audits (`audit_*` ACS shares joined *after* routing), ranks Hidden EI Deserts for mobile screening without 6x NSCH fan-out, and composes plain-language **English & Español** Caregiver Action Notes.
+- **Pydantic Schema Validation (`first_milestones/schemas.py`):** Validates structured 45-Day Pathway & Network Brief payloads across ADK tool outputs, REST endpoints, and UI artifacts.
+
+### 2. Multi-State BigQuery Property Graph & Data Rigor (`first_milestones/tools/`)
+- **Live 6-State Property Graph (`a4i_early_intervention_multistate.ReferralGraph` & `a4i_early_intervention.ReferralGraph`):**
+  - Supports all 6 challenge states out of the box: **Mississippi (`MS`, FIPS `28`)**, **California (`CA`, leading-zero FIPS `'06...'`, `41,144` under-5 children across `101` tracts)**, **Alabama (`AL`, leading-zero FIPS `'01...'`)**, **Georgia (`GA`, `13`)**, **Texas (`TX`, `48`)**, and **New York (`NY`, `36`)**.
+  - `A4I_DATASET=a4i_early_intervention` remains preserved as the primary single-state dataset while `A4I_MULTISTATE_DATASET=a4i_early_intervention_multistate` serves live cross-state ISO/IEC 39075 GQL `GRAPH_TABLE` switching without reloading tables.
+- **4 Verified Data & Graph Rigor Guardrails:**
+  1. **Zero-Padding FIPS Preservation:** `census_tract_geoid` (11-char `STRING`) and `county_fips` (5-char `STRING`) preserve `'01...'` (AL) and `'06...'` (CA) leading zeros end-to-end.
+  2. **ACS `limited_english_rate` Trap Caught:** All 426 starter ACS tracts carry `0.0` in `limited_english_rate`; excluded from formulas and replaced with `bilingual_services_listed` + statewide HRSA NSCH language strata.
+  3. **Statewide-Only NSCH Grain:** `nsch_developmental_screening_survey` (`6` statewide rows per state) is never cross-joined to tracts, preventing 6x row fan-out.
+  4. **Correlated Prefix-Deduplicated GQL:** `COUNT(DISTINCT h.case_chain_id) = 1` + `QUALIFY ROW_NUMBER() OVER (PARTITION BY chain_id ORDER BY total_hops DESC) = 1` yields exact 44 episodes and 26 `>45d` breaches in MS.
+
+### 3. Google-Managed MCP Integration (`tools.yaml` + `mcp_integration.py`)
+- Connects automatically to **Google MCP Toolbox for Databases** (`googleapis/mcp-toolbox` `v0.27.0` via ADK `ToolboxToolset` using `agent/tools.yaml`) inside Cloud Run, or to **BigQuery's Built-in Remote Managed MCP Server** (`https://bigquery.googleapis.com/mcp` via ADK `McpToolset` + Google ADC headers).
+
+### 4. Interactive Cytoscape.js Graph & SSE Streaming Workbench (`main.py` + `static/`)
+- **Live SSE Streaming (`POST /run` & `/api/chat`):** Streams real-time ADK agent/sub-agent delegation events, tool invocations, and token deltas to the Coordinator Assistant pane while simultaneously synchronizing the right-hand Pathway & Network Brief.
+- **Interactive Cytoscape.js Referral Topology (`static/vendor/cytoscape.min.js`):** Renders interactive multi-hop provider nodes (`Screening_Pediatric_Clinic`, `Part_C_Intake_Coordinator`, `Multidisciplinary_Eval_Hub`, `EI_Therapy_Vendor`), crimson `paper_fax` bounce loops (`>45d`), and emerald `ehr_electronic_portal` compliant corridors (`<=45d`) with filter toggles, hover tooltips, and click-to-inspect details.
 
 ---
 
 ## Quick Start
 
-### 1. Deploy Everything to Google Cloud Run (Recommended in Cloud Shell)
-From the **repository root** in Google Cloud Shell:
-
+### 1. Local `gcloud` ADC Bridge & Local Workbench (`http://localhost:8080`)
+If running locally with an active `gcloud auth login` session (without browser ADC setup):
 ```bash
-bash scripts/deploy_cloud_run.sh MS     # or CA, AL, GA, TX, NY
+bash scripts/setup_local_adc.sh         # bridges gcloud CLI credentials for BigQuery + Vertex AI
+.venv/bin/python agent/main.py          # launches Split-Pane Coordinator Workbench on :8080
+```
+Or launch the built-in ADK Developer Web UI:
+```bash
+.venv/bin/adk web agent
 ```
 
-This single script:
-1. Enables required GCP APIs + BigQuery MCP,
-2. Runs `scripts/setup_graph.sh` to provision the zero-baseline `a4i-graph` Enterprise reservation, load all five tables into `a4i_early_intervention`, and create `a4i_early_intervention.ReferralGraph`,
-3. Grants `bigquery.dataViewer`, `bigquery.jobUser`, and `aiplatform.user` to the Cloud Run service account, and
-4. Deploys the unified ADK + MCP Toolbox + Split-Pane UI container to Cloud Run with `--min-instances=1` (zero cold starts during your recorded demo).
-
-### 2. Run Locally (or in Cloud Shell Preview)
-
-**Split-Pane Coordinator Workbench (`http://localhost:8080`):**
+### 2. Deploy Unified Workbench + MCP Toolbox to Google Cloud Run
+From the repository root:
 ```bash
-pip install -r agent/requirements.txt
-python agent/main.py
+bash scripts/deploy_cloud_run.sh MS     # or CA, AL, GA, TX, NY (pass --skip-data for code-only redeploy)
 ```
+Configures `--min-instances=1`, `A4I_DATASET=a4i_early_intervention`, `A4I_MULTISTATE_DATASET=a4i_early_intervention_multistate`, and `A4I_SUBAGENT_MODEL=gemini-2.5-flash` for zero-cold-start live demos.
 
-**Built-in ADK Developer Web UI (`adk web`):**
+### 3. Deploy ADK Package to Vertex AI Agent Engine (`google-adk==2.14.1`)
+Validate flags, staging bucket, and agent importability first with `--dry-run`, then deploy live:
 ```bash
-adk web agent
-```
-
-### 3. (Alternative) Deploy to Vertex AI Agent Engine
-```bash
-adk deploy agent_engine --project="$GOOGLE_CLOUD_PROJECT" --region=us-central1 ./agent/first_milestones
+bash scripts/deploy_agent_engine.sh --dry-run
+bash scripts/deploy_agent_engine.sh --project="$GOOGLE_CLOUD_PROJECT" --region=us-central1
 ```

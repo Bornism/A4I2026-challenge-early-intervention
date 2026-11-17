@@ -4,15 +4,17 @@
 #
 # Consumed by Python ADK via `ToolboxToolset` (or alongside BigQuery's remote
 # managed MCP server `https://bigquery.googleapis.com/mcp`).
-# Note: `entrypoint.sh` substitutes __PROJECT_ID__, __DATASET__, and __LOCATION__
-# at container startup if environment interpolation differs across versions.
+# Note: `entrypoint.sh` resolves `${GOOGLE_CLOUD_PROJECT}`, `${A4I_LOCATION}`,
+# and `${A4I_DATASET}` into `/tmp/tools.rendered.yaml` at container startup.
+# All statements enforce governed column projections (excluding `audit_*` and
+# per-row `data_provenance` bloat) and bounded row limits (`LIMIT 10` / `LIMIT 25`).
 # =============================================================================
 
 sources:
   ei_bigquery:
     kind: bigquery
     project: ${GOOGLE_CLOUD_PROJECT}
-    location: ${A4I_LOCATION:US}
+    location: ${A4I_LOCATION}
 
 tools:
   mcp_get_regional_agency_performance:
@@ -21,7 +23,7 @@ tools:
     description: >-
       Fetches IDEA Part C regional lead agency 45-day timely IFSP compliance rates,
       referral intake counts, and system capacity vs. family delay counts from
-      a4i_early_intervention.idea_part_c_agency_performance (100% [Synthetic]
+      ${A4I_DATASET}.idea_part_c_agency_performance (100% [Synthetic]
       agencies calibrated to federal OSEP Indicator C7 reports).
     statement: |
       SELECT
@@ -29,17 +31,16 @@ tools:
         state_code,
         served_counties,
         synthetic_agency_name,
-        synthetic_office_address,
         reporting_fiscal_year,
         annual_referrals_received,
         evaluations_completed_count,
         initial_ifsp_within_45_days_count,
         ROUND(SAFE_DIVIDE(initial_ifsp_within_45_days_count, evaluations_completed_count) * 100, 1) AS timely_45d_ifsp_pct,
         ifsp_delayed_capacity_count,
-        ifsp_delayed_family_count,
-        data_provenance
-      FROM `a4i_early_intervention.idea_part_c_agency_performance`
-      ORDER BY timely_45d_ifsp_pct ASC;
+        ifsp_delayed_family_count
+      FROM `${A4I_DATASET}.idea_part_c_agency_performance`
+      ORDER BY timely_45d_ifsp_pct ASC
+      LIMIT 25;
 
   mcp_get_statewide_nsch_screening_strata:
     kind: bigquery-sql
@@ -62,11 +63,11 @@ tools:
         sampled_children_9_35m,
         ROUND(standardized_screening_rate_pct * 100, 1) AS standardized_screening_rate_pct,
         ROUND(followup_requested_pct * 100, 1) AS followup_requested_pct,
-        ROUND(margin_of_error_pct * 100, 1) AS margin_of_error_pct,
-        data_provenance
-      FROM `a4i_early_intervention.nsch_developmental_screening_survey`
+        ROUND(margin_of_error_pct * 100, 1) AS margin_of_error_pct
+      FROM `${A4I_DATASET}.nsch_developmental_screening_survey`
       WHERE geographic_level = 'Statewide'
-      ORDER BY standardized_screening_rate_pct ASC;
+      ORDER BY standardized_screening_rate_pct ASC
+      LIMIT 25;
 
   mcp_lookup_tract_routing_context:
     kind: bigquery-sql
@@ -96,8 +97,9 @@ tools:
         limited_english_rate AS acs_limited_english_rate_trap_all_zero,
         latitude,
         longitude
-      FROM `a4i_early_intervention.acs_under5_tract_demographics`
-      WHERE @tract_geoid = 'ALL' OR LPAD(census_tract_geoid, 11, '0') = LPAD(@tract_geoid, 11, '0')
+      FROM `${A4I_DATASET}.acs_under5_tract_demographics`
+      WHERE UPPER(@tract_geoid) = 'ALL'
+         OR LPAD(census_tract_geoid, 11, '0') = LPAD(TRIM(@tract_geoid), 11, '0')
       ORDER BY poverty_rate DESC, children_under_5_count DESC
       LIMIT 10;
 
@@ -113,7 +115,7 @@ tools:
     parameters:
       - name: role_filter
         type: string
-        description: "Node role to filter on, or 'ALL' for all 30 CareNodes."
+        description: "Node role to filter on, or 'ALL' for top 25 CareNodes by active waitlist."
     statement: |
       SELECT
         provider_id,
@@ -128,9 +130,11 @@ tools:
         active_waitlist_count,
         median_internal_wait_days,
         LPAD(census_tract_geoid, 11, '0') AS census_tract_geoid
-      FROM `a4i_early_intervention.pediatric_and_ei_provider_directory`
-      WHERE @role_filter = 'ALL' OR node_role = @role_filter
-      ORDER BY active_waitlist_count DESC;
+      FROM `${A4I_DATASET}.pediatric_and_ei_provider_directory`
+      WHERE UPPER(@role_filter) = 'ALL'
+         OR LOWER(node_role) = LOWER(TRIM(@role_filter))
+      ORDER BY active_waitlist_count DESC
+      LIMIT 25;
 
 toolsets:
   first_milestones_bq:
