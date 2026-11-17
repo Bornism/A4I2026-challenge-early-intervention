@@ -15,9 +15,38 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+load_dotenv() {
+  local env_file="${REPO_ROOT}/.env" line_no=0 line key val
+  [[ -f "${env_file}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line_no=$((line_no + 1))
+    [[ "${line_no}" -le 200 ]] || { echo "ERROR: .env exceeds 200 lines." >&2; exit 1; }
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    if [[ "${line}" =~ ^(A4I_[A-Z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      val="${BASH_REMATCH[2]}"
+      val="${val%$'\r'}"
+      if [[ "${val}" =~ ^\"(.*)\"$ || "${val}" =~ ^\'(.*)\'$ ]]; then
+        val="${BASH_REMATCH[1]}"
+      fi
+      if [[ -z "${!key:-}" ]]; then
+        export "${key}=${val}"
+      fi
+    fi
+  done < "${env_file}"
+}
+
+load_dotenv
+
 DATASET="${A4I_DATASET:-a4i_early_intervention}"
 LOCATION="${A4I_LOCATION:-US}"
 ARG="${1:-MS}"
+
+if [[ ! "${DATASET}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ || ${#DATASET} -gt 1024 ]]; then
+  echo "ERROR: Invalid dataset identifier '${DATASET}'. Must match ^[a-zA-Z_][a-zA-Z0-9_]*$." >&2
+  exit 1
+fi
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }

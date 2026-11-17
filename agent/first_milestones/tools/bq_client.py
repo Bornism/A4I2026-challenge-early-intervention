@@ -16,12 +16,15 @@ import functools
 import logging
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+_DATASET_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 VALID_STATES = ("MS", "AL", "GA", "TX", "CA", "NY")
 STATE_LABELS = {
@@ -39,9 +42,12 @@ def get_config() -> dict[str, str]:
     state = os.environ.get("A4I_STATE", "MS").strip().upper()
     if state not in VALID_STATES:
         state = "MS"
+    dataset = os.environ.get("A4I_DATASET", "a4i_early_intervention").strip()
+    if not _DATASET_RE.match(dataset):
+        dataset = "a4i_early_intervention"
     return {
         "project": os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip(),
-        "dataset": os.environ.get("A4I_DATASET", "a4i_early_intervention").strip(),
+        "dataset": dataset,
         "location": os.environ.get("A4I_LOCATION", "US").strip(),
         "state": state,
         "state_name": STATE_LABELS[state],
@@ -84,6 +90,8 @@ def load_local_state_frames(state_code: str) -> dict[str, pd.DataFrame]:
 
     nsch = pd.read_parquet(data_dir / "nsch_developmental_screening_survey.parquet")
     nsch = nsch[nsch["state_code"] == st].copy()
+    if "geographic_level" in nsch.columns:
+        nsch = nsch[nsch["geographic_level"] == "Statewide"].copy()
 
     agencies = pd.read_parquet(data_dir / "idea_part_c_agency_performance.parquet")
     agencies = agencies[agencies["state_code"] == st].copy()
@@ -161,12 +169,60 @@ class DualBackendGraphClient:
         cfg = get_config()
         ds = cfg["dataset"]
         ddl = f"""
+        CREATE OR REPLACE VIEW {ds}.v_graph_neighborhoods AS
+        SELECT
+          LPAD(census_tract_geoid, 11, '0') AS tract_geoid,
+          state_code,
+          county_name,
+          children_under_5_count,
+          poverty_rate,
+          no_vehicle_rate,
+          assistance_rate,
+          median_household_income,
+          latitude,
+          longitude
+        FROM {ds}.acs_under5_tract_demographics;
+
+        CREATE OR REPLACE VIEW {ds}.v_graph_refers_to_edges AS
+        SELECT
+          referral_event_id,
+          source_provider_id,
+          target_provider_id,
+          case_chain_id,
+          hop_sequence,
+          handoff_wait_days,
+          transmission_channel,
+          handoff_reason,
+          concern_domain,
+          child_age_months,
+          child_home_tract_geoid,
+          IF(STARTS_WITH(handoff_reason, 'Re-Referral Bounce'), 1.0, 0.0) AS bounce_flag,
+          AVG(IF(STARTS_WITH(handoff_reason, 'Re-Referral Bounce'), 1.0, 0.0)) OVER (PARTITION BY source_provider_id, target_provider_id) AS pair_bounce_rate
+        FROM {ds}.deidentified_part_c_referral_logs;
+
+        CREATE OR REPLACE VIEW {ds}.v_graph_serves_area_edges AS
+        SELECT
+          CONCAT(p.provider_id, '_', LPAD(n.census_tract_geoid, 11, '0')) AS serves_edge_id,
+          p.provider_id,
+          LPAD(n.census_tract_geoid, 11, '0') AS tract_geoid,
+          ROUND(ST_DISTANCE(ST_GEOGPOINT(p.longitude, p.latitude), ST_GEOGPOINT(n.longitude, n.latitude)) / 1000.0, 2) AS travel_distance_km,
+          CAST(ROUND((ST_DISTANCE(ST_GEOGPOINT(p.longitude, p.latitude), ST_GEOGPOINT(n.longitude, n.latitude)) / 1000.0) * 1.5, 0) AS INT64) AS estimated_travel_minutes,
+          (p.node_role IN ('Part_C_Intake_Coordinator', 'Multidisciplinary_Eval_Hub') AND p.bilingual_services_listed) AS mobile_visit_capable
+        FROM {ds}.pediatric_and_ei_provider_directory AS p
+        JOIN {ds}.acs_under5_tract_demographics AS n
+          ON p.state_code = n.state_code
+        WHERE ST_DISTANCE(ST_GEOGPOINT(p.longitude, p.latitude), ST_GEOGPOINT(n.longitude, n.latitude)) <= 80000;
+
         CREATE OR REPLACE PROPERTY GRAPH {ds}.ReferralGraph
           NODE TABLES (
             {ds}.pediatric_and_ei_provider_directory AS CareNode
               KEY (provider_id)
               LABEL CareNode
-              PROPERTIES ALL COLUMNS EXCEPT (provider_geom)
+              PROPERTIES ALL COLUMNS EXCEPT (provider_geom),
+            {ds}.v_graph_neighborhoods AS Neighborhood
+              KEY (tract_geoid)
+              LABEL Neighborhood
+              PROPERTIES ALL COLUMNS
           )
           EDGE TABLES (
             {ds}.deidentified_part_c_referral_logs AS ReferralHandoff
@@ -174,6 +230,18 @@ class DualBackendGraphClient:
               SOURCE KEY (source_provider_id) REFERENCES CareNode (provider_id)
               DESTINATION KEY (target_provider_id) REFERENCES CareNode (provider_id)
               LABEL ReferralHandoff
+              PROPERTIES ALL COLUMNS,
+            {ds}.v_graph_refers_to_edges AS REFERS_TO
+              KEY (referral_event_id)
+              SOURCE KEY (source_provider_id) REFERENCES CareNode (provider_id)
+              DESTINATION KEY (target_provider_id) REFERENCES CareNode (provider_id)
+              LABEL REFERS_TO
+              PROPERTIES ALL COLUMNS,
+            {ds}.v_graph_serves_area_edges AS SERVES_AREA
+              KEY (serves_edge_id)
+              SOURCE KEY (provider_id) REFERENCES CareNode (provider_id)
+              DESTINATION KEY (tract_geoid) REFERENCES Neighborhood (tract_geoid)
+              LABEL SERVES_AREA
               PROPERTIES ALL COLUMNS
           );
         """

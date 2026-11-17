@@ -38,7 +38,8 @@ SELECT
   concern_domain,
   child_age_months,
   child_home_tract_geoid,
-  IF(STARTS_WITH(handoff_reason, 'Re-Referral Bounce'), 1.0, 0.0) AS bounce_flag
+  IF(STARTS_WITH(handoff_reason, 'Re-Referral Bounce'), 1.0, 0.0) AS bounce_flag,
+  AVG(IF(STARTS_WITH(handoff_reason, 'Re-Referral Bounce'), 1.0, 0.0)) OVER (PARTITION BY source_provider_id, target_provider_id) AS pair_bounce_rate
 FROM a4i_early_intervention.deidentified_part_c_referral_logs;
 
 CREATE OR REPLACE VIEW a4i_early_intervention.v_graph_serves_area_edges AS

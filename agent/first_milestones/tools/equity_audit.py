@@ -12,6 +12,7 @@ Governance Rule Enforced:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .bq_client import get_config, graph_client, haversine_km, load_local_state_frames
@@ -271,15 +272,33 @@ def _build_outreach_zones_gql(
     dataset: str,
     needs_medicaid: bool,
     needs_bilingual: bool,
+    project: str = "",
+    state_code: str = "",
 ) -> str:
     """Builds the BigQuery SQL + ISO GQL GRAPH_TABLE query for outreach zone desert detection."""
+    clean_project = project.strip().strip("`") if isinstance(project, str) else ""
+    if clean_project and not re.fullmatch(r"^[A-Za-z0-9_.:-]+$", clean_project):
+        clean_project = ""
+    clean_dataset = dataset.strip().strip("`")
+    fq_dataset = f"{clean_project}.{clean_dataset}" if clean_project else clean_dataset
+    graph_ref = (
+        f"`{fq_dataset}.ReferralGraph`" if clean_project else f"{clean_dataset}.ReferralGraph"
+    )
+
+    clean_state = state_code.strip().upper() if isinstance(state_code, str) else ""
+    if not re.fullmatch(r"^[A-Z]{2}$", clean_state):
+        clean_state = ""
+    d_where_clause = f"\n  WHERE d.state_code = '{clean_state}'" if clean_state else ""
+    outer_where_clause = f"\nWHERE d.state_code = '{clean_state}'" if clean_state else ""
+    gql_state_filter = f"n.state_code = '{clean_state}'\n      AND " if clean_state else ""
+
     med_filter = (
-        "AND start.accepts_medicaid = TRUE AND eval.accepts_medicaid = TRUE"
+        "\n      AND start.accepts_medicaid = TRUE AND eval.accepts_medicaid = TRUE"
         if needs_medicaid
         else ""
     )
     bil_filter = (
-        "AND start.bilingual_services_listed = TRUE AND eval.bilingual_services_listed = TRUE"
+        "\n      AND start.bilingual_services_listed = TRUE AND eval.bilingual_services_listed = TRUE"
         if needs_bilingual
         else ""
     )
@@ -296,27 +315,43 @@ WITH tract_nearest_clinic AS (
       ),
       1
     ) AS nearest_any_clinic_km
-  FROM `{dataset}.acs_under5_tract_demographics` AS d
-  CROSS JOIN `{dataset}.pediatric_and_ei_provider_directory` AS p
+  FROM `{fq_dataset}.acs_under5_tract_demographics` AS d
+  INNER JOIN `{fq_dataset}.pediatric_and_ei_provider_directory` AS p
+    ON d.state_code = p.state_code{d_where_clause}
   GROUP BY 1
 ),
 tract_compliant_paths AS (
   SELECT
     LPAD(census_tract_geoid, 11, '0') AS census_tract_geoid,
-    COUNT(*) AS reachable_45d_compliant_paths
+    COUNT(DISTINCT CONCAT(start_provider_id, '->', eval_provider_id)) AS reachable_45d_compliant_paths
   FROM GRAPH_TABLE(
-    {dataset}.ReferralGraph
+    {graph_ref}
     MATCH (n:Neighborhood)<-[s:SERVES_AREA]-(start:CareNode)-[r:REFERS_TO]->{{1,3}}(eval:CareNode)
-    WHERE eval.node_role IN ('Multidisciplinary_Eval_Hub', 'EI_Therapy_Vendor')
-      {med_filter}
-      {bil_filter}
-    LET total_wait_days = (
-      SELECT SUM(h.handoff_wait_days) FROM UNNEST(r) AS h
-    )
+    WHERE {gql_state_filter}s.travel_distance_km <= 25.0
+      AND eval.node_role IN ('Multidisciplinary_Eval_Hub', 'EI_Therapy_Vendor')
+      AND eval.part_c_vendor_enrolled = TRUE
+      AND start.provider_id != eval.provider_id{med_filter}{bil_filter}
+      AND (
+        SELECT LOGICAL_AND(
+          h.bounce_flag = 0
+          AND NOT STARTS_WITH(h.handoff_reason, 'Re-Referral Bounce')
+        )
+        FROM UNNEST(r) AS h
+      )
+    LET handoff_days = (
+          SELECT SUM(h.handoff_wait_days) FROM UNNEST(r) AS h
+        ),
+        total_wait_days = (
+          start.median_internal_wait_days
+          + (SELECT SUM(h.handoff_wait_days) FROM UNNEST(r) AS h)
+          + eval.median_internal_wait_days
+        )
     FILTER total_wait_days <= 45
     RETURN
       n.tract_geoid AS census_tract_geoid,
+      start.provider_id AS start_provider_id,
       eval.provider_id AS eval_provider_id,
+      handoff_days,
       total_wait_days
   )
   GROUP BY 1
@@ -329,11 +364,11 @@ SELECT
   d.no_vehicle_rate,
   nc.nearest_any_clinic_km,
   COALESCE(cp.reachable_45d_compliant_paths, 0) AS reachable_45d_compliant_paths
-FROM `{dataset}.acs_under5_tract_demographics` AS d
+FROM `{fq_dataset}.acs_under5_tract_demographics` AS d
 INNER JOIN tract_nearest_clinic AS nc
   ON LPAD(d.census_tract_geoid, 11, '0') = nc.census_tract_geoid
 LEFT JOIN tract_compliant_paths AS cp
-  ON LPAD(d.census_tract_geoid, 11, '0') = cp.census_tract_geoid
+  ON LPAD(d.census_tract_geoid, 11, '0') = cp.census_tract_geoid{outer_where_clause}
 ORDER BY d.poverty_rate DESC;""".strip()
 
 
@@ -370,6 +405,8 @@ def rank_outreach_zones(
         cfg["dataset"],
         needs_medicaid=needs_medicaid,
         needs_bilingual=needs_bilingual,
+        project=cfg["project"],
+        state_code=cfg["state"],
     )
     bq_rows = graph_client.query_bq_or_none(gql_query)
     engine = (
@@ -384,21 +421,28 @@ def rank_outreach_zones(
             geoid = str(row["census_tract_geoid"]).strip().zfill(11)
             bq_by_tract[geoid] = row
 
-    # Build directed adjacency list from referral logs using minimum observed handoff wait
+    # Build directed adjacency list strictly from bounce-free referral logs
+    # using minimum observed handoff wait per directed provider pair.
     prov_by_id = {str(r["provider_id"]): r for _, r in prov.iterrows()}
     adj: dict[str, list[tuple[str, int]]] = {}
     if not logs.empty:
-        edge_waits = (
-            logs.groupby(["source_provider_id", "target_provider_id"], as_index=False)[
-                "handoff_wait_days"
-            ]
-            .min()
-        )
-        for _, edge in edge_waits.iterrows():
-            src_id = str(edge["source_provider_id"])
-            dst_id = str(edge["target_provider_id"])
-            wait_d = int(edge["handoff_wait_days"])
-            adj.setdefault(src_id, []).append((dst_id, wait_d))
+        non_bounce_logs = logs[
+            ~logs["handoff_reason"].astype(str).str.startswith("Re-Referral Bounce")
+        ]
+        if "bounce_flag" in non_bounce_logs.columns:
+            non_bounce_logs = non_bounce_logs[non_bounce_logs["bounce_flag"] == 0]
+        if not non_bounce_logs.empty:
+            edge_waits = (
+                non_bounce_logs.groupby(
+                    ["source_provider_id", "target_provider_id"], as_index=False
+                )["handoff_wait_days"]
+                .min()
+            )
+            for _, edge in edge_waits.iterrows():
+                src_id = str(edge["source_provider_id"])
+                dst_id = str(edge["target_provider_id"])
+                wait_d = int(edge["handoff_wait_days"])
+                adj.setdefault(src_id, []).append((dst_id, wait_d))
 
     target_roles = {"Multidisciplinary_Eval_Hub", "EI_Therapy_Vendor"}
 
@@ -410,7 +454,7 @@ def rank_outreach_zones(
         return True
 
     def _count_reachable_45d_paths(t_lat: float, t_lon: float) -> int:
-        count = 0
+        reachable_pairs: set[tuple[str, str]] = set()
         for _, start_row in prov.iterrows():
             if not _node_matches_filters(start_row):
                 continue
@@ -420,31 +464,37 @@ def rank_outreach_zones(
             if dist_km > 25.0:
                 continue
             start_id = str(start_row["provider_id"])
-            # Iterative DFS for 1..3 hop paths with cumulative wait <= 45 days
+            start_wait = int(start_row["median_internal_wait_days"])
+            # Iterative DFS for 1..3 hop bounce-free paths where
+            # start.median_internal_wait_days + handoff_days + eval.median_internal_wait_days <= 45
             stack: list[tuple[str, int, int, frozenset[str]]] = [
                 (start_id, 0, 0, frozenset({start_id}))
             ]
             while stack:
-                curr_id, depth, cum_wait, visited = stack.pop()
+                curr_id, depth, cum_handoff_days, visited = stack.pop()
                 if depth == 3:
                     continue
                 for nxt_id, edge_wait in adj.get(curr_id, ()):
                     if nxt_id in visited:
                         continue
-                    nxt_wait = cum_wait + edge_wait
-                    if nxt_wait > 45:
+                    nxt_handoff = cum_handoff_days + edge_wait
+                    if start_wait + nxt_handoff > 45:
                         continue
                     nxt_row = prov_by_id.get(nxt_id)
                     if nxt_row is None:
                         continue
+                    eval_wait = int(nxt_row["median_internal_wait_days"])
+                    total_wait_days = start_wait + nxt_handoff + eval_wait
                     if (
-                        str(nxt_row["node_role"]) in target_roles
+                        total_wait_days <= 45
+                        and str(nxt_row["node_role"]) in target_roles
+                        and bool(nxt_row["part_c_vendor_enrolled"])
                         and _node_matches_filters(nxt_row)
                     ):
-                        count += 1
+                        reachable_pairs.add((start_id, nxt_id))
                     if depth + 1 < 3:
-                        stack.append((nxt_id, depth + 1, nxt_wait, visited | {nxt_id}))
-        return count
+                        stack.append((nxt_id, depth + 1, nxt_handoff, visited | {nxt_id}))
+        return len(reachable_pairs)
 
     max_u5 = max(1, int(demo["children_under_5_count"].max())) if not demo.empty else 1
     scored_zones: list[tuple[dict[str, Any], Any]] = []
@@ -488,11 +538,16 @@ def rank_outreach_zones(
             "nearest_any_clinic_km": nearest_any_clinic_km,
             "reachable_45d_paths_count": reachable_45d_paths_count,
             "is_hidden_ei_desert": is_hidden_ei_desert,
+            "mobility_support_recommended": bool(
+                noveh >= 0.10 or nearest_any_clinic_km > 25.0
+            ),
             "outreach_priority_score": outreach_priority_score,
         }
         scored_zones.append((zone, tr))
 
-    scored_zones.sort(key=lambda item: item[0]["outreach_priority_score"], reverse=True)
+    scored_zones.sort(
+        key=lambda item: (-item[0]["outreach_priority_score"], item[0]["census_tract_geoid"])
+    )
     hidden_ei_deserts_count = sum(1 for z, _ in scored_zones if z["is_hidden_ei_desert"])
 
     limit = max(1, int(top_n))
@@ -512,8 +567,13 @@ def rank_outreach_zones(
         ranked_outreach_zones.append(zone_with_audit)
 
     # Statewide HRSA NSCH screening gap context (strictly at 'Statewide' grain — no 6x fan-out)
+    nsch_statewide = (
+        nsch[nsch["geographic_level"].astype(str) == "Statewide"]
+        if "geographic_level" in nsch.columns
+        else nsch
+    )
     nsch_clean = []
-    for _, r in nsch.sort_values("standardized_screening_rate_pct").iterrows():
+    for _, r in nsch_statewide.sort_values("standardized_screening_rate_pct").iterrows():
         nsch_clean.append({
             "survey_stratum_id": str(r["survey_stratum_id"]),
             "geographic_level": str(r["geographic_level"]),
@@ -529,6 +589,11 @@ def rank_outreach_zones(
 
     return {
         "engine": engine,
+        "synthetic_provenance_notice": (
+            "100% [Synthetic] CareNode providers (SYN-PROV-*) and ReferralGraph "
+            "de-identified referral handoff logs; anchored to public US Census ACS "
+            "under-5 tract demographics and statewide HRSA NSCH screening rates."
+        ),
         "iso_gql_query": gql_query,
         "filters_applied": {
             "needs_medicaid": bool(needs_medicaid),

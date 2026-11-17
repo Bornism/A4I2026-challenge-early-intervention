@@ -32,6 +32,11 @@ from pydantic import BaseModel, Field
 
 from first_milestones.agent import ACTIVE_MCP_MODE, DEFAULT_MODEL, root_agent
 from first_milestones.brief_builder import build_caregiver_notes, generate_complete_45d_brief
+from first_milestones.tools import (
+    detect_regional_bottleneck_hubs,
+    find_viable_45d_paths,
+    rank_outreach_zones,
+)
 from first_milestones.tools.bq_client import VALID_STATES, get_config, load_local_state_frames
 from first_milestones.tools.equity_audit import (
     prioritize_community_screening_tracts,
@@ -111,7 +116,7 @@ def _default_anchor_tract(state_code: str) -> str:
 def _parse_intent_and_fallback_reply(msg: str, state_code: str) -> tuple[str, list[str], dict[str, Any]]:
     """Executes real ISO GQL / Equity tools and formats a fallback reply when offline."""
     lower = msg.lower()
-    tract_match = re.search(r"\b(\d{11})\b", msg)
+    tract_match = re.search(r"\b(\d{11})\b", msg) or re.search(r"\b(\d{5})\b", msg)
     tract = tract_match.group(1) if tract_match else _default_anchor_tract(state_code)
 
     age_match = re.search(r"\b(\d{1,2})\s*(?:-|\s)?(?:month|mo\b|m\b)", lower)
@@ -149,44 +154,22 @@ def _parse_intent_and_fallback_reply(msg: str, state_code: str) -> tuple[str, li
         )
 
     rec = brief["routing"]["recommended_pathway"]
+    viable = brief["viable_45d_paths"]
     bounce = brief["routing"]["cautionary_historical_bounce_chain"]
     top_hub = brief["network_audit"]["top_hidden_bounce_hub"]
+    btwn_hubs = brief["bottleneck_hubs"]["bottleneck_hubs"]
+    top_btwn = btwn_hubs[0] if btwn_hubs else None
     sim = brief["counterfactual_simulation"]["impact_summary"]
-    outreach_top = brief["screening_outreach"]["priority_screening_tracts"][0]
+    outreach_priorities = brief["screening_outreach"]["priority_screening_tracts"]
+    outreach_top = outreach_priorities[0]
+    hidden_deserts_count = brief["outreach_zones"]["hidden_ei_deserts_count"]
+    ranked_zones = brief["outreach_zones"]["ranked_outreach_zones"]
+    top_zone = ranked_zones[0] if ranked_zones else None
+    resolved_tract = viable["tract_context"]["census_tract_geoid"]
 
-    if "screen" in lower or "outreach" in lower or "mobile" in lower:
-        tools_used = [
-            "prioritize_community_screening_tracts",
-            "find_compliant_45d_pathways",
-            "run_post_output_equity_audit",
-        ]
-        reply = (
-            f"### Community Developmental Screening Readiness ({state_code})\n\n"
-            f"- **Top Priority Neighborhood:** Tract `{outreach_top['census_tract_geoid']}` ({outreach_top['county_name']}) — "
-            f"**{outreach_top['children_under_5_count']}** children under 5, **{outreach_top['poverty_pct']}%** poverty, "
-            f"**{outreach_top['zero_vehicle_pct']}%** zero-vehicle households.\n"
-            f"- **Verified <=45-Day Downstream Capacity:** Paired with `{outreach_top['verified_downstream_45d_pathway']['eval_hub_id']}` "
-            f"(~**{outreach_top['verified_downstream_45d_pathway']['expected_cumulative_days']} days** cumulative to initial IFSP).\n"
-            f"- **Data Rigor Guardrails:** Ranked without `audit_*` racial shares and without the all-zero ACS `limited_english_rate` (`0.0`) column.\n\n"
-            f"*(Right-hand brief updated with full screening readiness, multi-hop graph comparison, and Post-Output Equity Audit.)*"
-        )
-    elif "audit" in lower or "bounce" in lower or "bottleneck" in lower or "simulat" in lower or "fax" in lower:
-        tools_used = [
-            "audit_multihop_bounce_hubs",
-            "simulate_hub_intervention",
-            "run_post_output_equity_audit",
-            "mcp_get_regional_agency_performance",
-        ]
-        reply = (
-            f"### Multi-Hop Network Bottleneck Audit & Counterfactual Fix ({state_code})\n\n"
-            f"- **Why Flat SQL Misleads:** Sorting by `active_waitlist_count` points at saturated downstream clinics, while **`{top_hub['provider_id']}`** "
-            f"({top_hub['synthetic_organization_name']}) looks healthy in a flat table (**{top_hub['flat_median_internal_wait_days']}d** internal wait) "
-            f"yet triggers **{top_hub['breached_over_45d']} of {top_hub['routed_episodes']}** `>45`-day statutory breaches (**{top_hub['total_excess_days_over_45']}** excess days) via `paper_fax` and unverified slot handoffs.\n"
-            f"- **Counterfactual Single-Hub Fix (`{brief['counterfactual_simulation']['target_intervention_scope']}`):** Upgrading `paper_fax` to `ehr_electronic_portal` + pre-checking bilingual/Medicaid slot capacity reduces breaches from **{sim['baseline_breaches_over_45d']} → {sim['simulated_breaches_over_45d']}** and saves **{sim['total_delayed_child_days_saved']} delayed child-days**.\n"
-            f"- **Provenance & Equity:** All `SYN-PROV-*` / `SYN-PARTC-*` rows are `100% [Synthetic]`; see the Post-Output Equity Audit panel on the right."
-        )
-    else:
-        tools_used = [
+    def _build_track1_reply() -> tuple[str, list[str]]:
+        t1_tools = [
+            "find_viable_45d_paths",
             "find_compliant_45d_pathways",
             "audit_multihop_bounce_hubs",
             "run_post_output_equity_audit",
@@ -194,8 +177,16 @@ def _parse_intent_and_fallback_reply(msg: str, state_code: str) -> tuple[str, li
         hops_str = " → ".join(
             [rec["hops"][0]["source_provider_id"]] + [h["target_provider_id"] for h in rec["hops"]]
         )
-        reply = (
+        viable_count = len(viable["viable_paths"])
+        pruned_count = viable["pruned_high_bounce_edges_count"]
+        fastest_viable = (
+            f" (fastest `{viable['viable_paths'][0]['start_provider_id']} → {viable['viable_paths'][0]['eval_provider_id']}` in **{viable['viable_paths'][0]['total_expected_days']}d**)"
+            if viable["viable_paths"]
+            else ""
+        )
+        t1_reply = (
             f"### <=45-Day Compliant Pathway vs. Historical Bounce Diagnosis ({state_code})\n\n"
+            f"- **Viable <=45-Day Graph Traversal (`find_viable_45d_paths`):** Found **{viable_count}** viable `<=45`-day paths for tract `{resolved_tract}`{fastest_viable} after pruning **{pruned_count}** high-bounce edges.\n"
             f"- **Recommended Electronic Route ({rec['expected_cumulative_days']} Days — Clears 45-Day Mandate by {rec['statutory_45d_headroom_days']}d):**\n"
             f"  `{hops_str}` via `ehr_electronic_portal` (100% Medicaid-enrolled, Part C vendor-verified, Spanish-bilingual).\n"
             f"- **Avoided Bounce Loop (`{bounce['case_chain_id']}` — {bounce['total_wait_days']} Days ❌):** Bypassed the 4-hop `paper_fax` re-referral loop (**{brief['routing']['days_saved_vs_bounce_loop']} days faster**).\n"
@@ -204,8 +195,77 @@ def _parse_intent_and_fallback_reply(msg: str, state_code: str) -> tuple[str, li
                 if age_m >= 30
                 else ""
             )
-            + f"- **Mobility & Caregiver Note:** Medicaid NEMT / mobile evaluation flagged for tract `{tract}` (**{brief['routing']['child_profile']['tract_zero_vehicle_pct']}%** zero-vehicle rate). English & Spanish caregiver notes are ready in the right panel."
+            + f"- **Mobility & Caregiver Note:** Medicaid NEMT / mobile evaluation flagged for tract `{resolved_tract}` (**{brief['routing']['child_profile']['tract_zero_vehicle_pct']}%** zero-vehicle rate). English & Spanish caregiver notes are ready in the right panel."
         )
+        return t1_reply, t1_tools
+
+    lower_for_outreach = lower.replace("autism screen", "")
+    if (
+        "screen" in lower_for_outreach
+        or "outreach" in lower
+        or "mobile" in lower
+        or "desert" in lower
+        or "underserved" in lower
+        or "rank_outreach" in lower
+    ):
+        tools_used = [
+            "rank_outreach_zones",
+            "prioritize_community_screening_tracts",
+            "find_compliant_45d_pathways",
+            "run_post_output_equity_audit",
+        ]
+        desert_bullet = (
+            f"- **Hidden Early Intervention Deserts (`rank_outreach_zones`):** Identified **{hidden_deserts_count}** hidden Early Intervention deserts "
+            f"(clinics within 25 km on a map, yet **0** reachable `<=45`-day Medicaid/bilingual evaluation paths); top outreach zone `{top_zone['census_tract_geoid']}` "
+            f"({top_zone['county_name']}) scores **{top_zone['outreach_priority_score']}** (`nearest_any_clinic_km={top_zone['nearest_any_clinic_km']} km`, "
+            f"`reachable_45d_paths_count={top_zone['reachable_45d_paths_count']}`).\n"
+            if top_zone
+            else f"- **Hidden Early Intervention Deserts (`rank_outreach_zones`):** Identified **{hidden_deserts_count}** hidden Early Intervention deserts statewide.\n"
+        )
+        reply = (
+            f"### Community Developmental Screening Readiness ({state_code})\n\n"
+            + desert_bullet
+            + f"- **Top Priority Neighborhood:** Tract `{outreach_top['census_tract_geoid']}` ({outreach_top['county_name']}) — "
+            f"**{outreach_top['children_under_5_count']}** children under 5, **{outreach_top['poverty_pct']}%** poverty, "
+            f"**{outreach_top['zero_vehicle_pct']}%** zero-vehicle households.\n"
+            f"- **Verified <=45-Day Downstream Capacity:** Paired with `{outreach_top['verified_downstream_45d_pathway']['eval_hub_id']}` "
+            f"(~**{outreach_top['verified_downstream_45d_pathway']['expected_cumulative_days']} days** cumulative to initial IFSP).\n"
+            f"- **Data Rigor Guardrails:** Ranked without `audit_*` racial shares and without the all-zero ACS `limited_english_rate` (`0.0`) column.\n\n"
+            f"*(Right-hand brief updated with hidden EI deserts, full screening readiness, multi-hop graph comparison, and Post-Output Equity Audit.)*"
+        )
+    elif any(
+        w in lower for w in ("route", "viable", "pathway", "prune", "toddler", "infant", "month-old")
+    ) and not any(w in lower for w in ("audit", "bottleneck", "betweenness", "simulat")):
+        reply, tools_used = _build_track1_reply()
+    elif any(
+        w in lower for w in ("audit", "bounce", "bottleneck", "betweenness", "simulat", "fax")
+    ):
+        tools_used = [
+            "detect_regional_bottleneck_hubs",
+            "audit_multihop_bounce_hubs",
+            "simulate_hub_intervention",
+            "run_post_output_equity_audit",
+            "mcp_get_regional_agency_performance",
+        ]
+        btwn_bullet = (
+            f"- **Graph Betweenness Bottleneck (`detect_regional_bottleneck_hubs`):** **`{top_btwn['provider_id']}`** ({top_btwn['organization_name']}, `{top_btwn['node_role']}`) "
+            f"carries a **{top_btwn['betweenness_flow_share_pct']}%** betweenness flow share across breached multi-hop chains "
+            f"(**{top_btwn['breached_paths_through_hub']} of {brief['bottleneck_hubs']['total_breached_multihop_chains']}** `>45`-day chains; "
+            f"**{top_btwn['paper_fax_share_pct']}%** `paper_fax`, **{top_btwn['bounce_rate_pct']}%** bounce rate) despite a **{top_btwn['flat_internal_wait_days']}d** internal wait.\n"
+            if top_btwn
+            else ""
+        )
+        reply = (
+            f"### Multi-Hop Network Bottleneck Audit & Counterfactual Fix ({state_code})\n\n"
+            + btwn_bullet
+            + f"- **Why Flat SQL Misleads:** Sorting by `active_waitlist_count` points at saturated downstream clinics, while **`{top_hub['provider_id']}`** "
+            f"({top_hub['synthetic_organization_name']}) looks healthy in a flat table (**{top_hub['flat_median_internal_wait_days']}d** internal wait) "
+            f"yet triggers **{top_hub['breached_over_45d']} of {top_hub['routed_episodes']}** `>45`-day statutory breaches (**{top_hub['total_excess_days_over_45']}** excess days) via `paper_fax` and unverified slot handoffs.\n"
+            f"- **Counterfactual Single-Hub Fix (`{brief['counterfactual_simulation']['target_intervention_scope']}`):** Upgrading `paper_fax` to `ehr_electronic_portal` + pre-checking bilingual/Medicaid slot capacity reduces breaches from **{sim['baseline_breaches_over_45d']} → {sim['simulated_breaches_over_45d']}** and saves **{sim['total_delayed_child_days_saved']} delayed child-days**.\n"
+            f"- **Provenance & Equity:** All `SYN-PROV-*` / `SYN-PARTC-*` rows are `100% [Synthetic]`; see the Post-Output Equity Audit panel on the right."
+        )
+    else:
+        reply, tools_used = _build_track1_reply()
 
     return reply, tools_used, brief
 
@@ -314,8 +374,12 @@ async def chat_endpoint(req: ChatRequest) -> dict[str, Any]:
                 if "find_compliant_45d_pathways" in captured_outputs:
                     brief["routing"] = captured_outputs["find_compliant_45d_pathways"]
                     brief["caregiver_notes"] = build_caregiver_notes(brief["routing"])
+                if "find_viable_45d_paths" in captured_outputs:
+                    brief["viable_45d_paths"] = captured_outputs["find_viable_45d_paths"]
                 if "audit_multihop_bounce_hubs" in captured_outputs:
                     brief["network_audit"] = captured_outputs["audit_multihop_bounce_hubs"]
+                if "detect_regional_bottleneck_hubs" in captured_outputs:
+                    brief["bottleneck_hubs"] = captured_outputs["detect_regional_bottleneck_hubs"]
                 if "simulate_hub_intervention" in captured_outputs:
                     brief["counterfactual_simulation"] = captured_outputs["simulate_hub_intervention"]
                 if "run_post_output_equity_audit" in captured_outputs:
@@ -324,6 +388,8 @@ async def chat_endpoint(req: ChatRequest) -> dict[str, Any]:
                     brief["screening_outreach"] = captured_outputs[
                         "prioritize_community_screening_tracts"
                     ]
+                if "rank_outreach_zones" in captured_outputs:
+                    brief["outreach_zones"] = captured_outputs["rank_outreach_zones"]
 
             reply_text = "\n".join(final_chunks).strip()
             if reply_text:

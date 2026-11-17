@@ -11,6 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from .tools import (
+    detect_regional_bottleneck_hubs,
+    find_viable_45d_paths,
+    rank_outreach_zones,
+)
 from .tools.equity_audit import prioritize_community_screening_tracts, run_post_output_equity_audit
 from .tools.graph_audit import audit_multihop_bounce_hubs, simulate_hub_intervention
 from .tools.graph_routing import find_compliant_45d_pathways
@@ -154,7 +159,16 @@ def generate_complete_45d_brief(
         needs_bilingual=needs_bilingual,
         has_household_vehicle=has_household_vehicle,
     )
+    viable_45d_paths = find_viable_45d_paths(
+        zip_or_tract=child_tract_geoid,
+        languages="Spanish" if needs_bilingual else "English",
+        insurance="Medicaid" if needs_medicaid else "Commercial",
+        specialty=concern_domain,
+        child_age_months=child_age_months,
+        has_household_vehicle=has_household_vehicle,
+    )
     audit = audit_multihop_bounce_hubs(only_breaches=True, limit_chains=6)
+    bottleneck_hubs = detect_regional_bottleneck_hubs(region="ALL", max_days=45, top_n=5)
     top_hub_id = (
         audit["top_hidden_bounce_hub"]["provider_id"]
         if audit.get("top_hidden_bounce_hub")
@@ -167,6 +181,11 @@ def generate_complete_45d_brief(
     )
     equity = run_post_output_equity_audit()
     outreach = prioritize_community_screening_tracts(top_n=5)
+    outreach_zones = rank_outreach_zones(
+        needs_medicaid=needs_medicaid,
+        needs_bilingual=needs_bilingual,
+        top_n=6,
+    )
     agencies = lookup_regional_agency_kpis()
     caregiver_notes = build_caregiver_notes(routing)
 
@@ -175,9 +194,12 @@ def generate_complete_45d_brief(
         "execution_engine": routing["execution_engine"],
         "agencies": agencies["agencies"],
         "routing": routing,
+        "viable_45d_paths": viable_45d_paths,
         "network_audit": audit,
+        "bottleneck_hubs": bottleneck_hubs,
         "counterfactual_simulation": simulation,
         "equity_audit": equity,
         "screening_outreach": outreach,
+        "outreach_zones": outreach_zones,
         "caregiver_notes": caregiver_notes,
     }

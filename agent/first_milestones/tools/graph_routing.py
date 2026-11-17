@@ -17,6 +17,7 @@ Strict Governance & Rigor Guardrails:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .bq_client import get_config, graph_client, haversine_km, load_local_state_frames
@@ -514,39 +515,58 @@ def _build_viable_45d_paths_gql(
     needs_medicaid: bool,
     needs_bilingual: bool,
     max_bounce_rate: float,
+    state_code: str = "",
 ) -> str:
     """Returns an ISO/IEC 39075 GQL GRAPH_TABLE query for <=45-day viable paths.
 
-    Traverses `(n:Neighborhood)<-[s:SERVES_AREA]-(start:CareNode)-[hops:REFERS_TO]->{1,3}(eval:CareNode)`
+    Traverses `(n:Neighborhood)<-[s:SERVES_AREA]-(start:CareNode {node_role: 'Screening_Pediatric_Clinic'})-[hops:REFERS_TO]->{1,3}(eval:CareNode)`
     over `{dataset}.ReferralGraph`, pruning high-bounce edges and enforcing IDEA Part C
     statutory <=45-day cumulative wait, Medicaid, and bilingual constraints.
     """
-    clean_tract = tract_geoid.strip().replace("'", "")
-    tract_filter = f"n.tract_geoid = '{clean_tract}'\n      AND " if clean_tract else ""
-    med_filter = (
-        "\n      AND start.accepts_medicaid = TRUE\n      AND eval.accepts_medicaid = TRUE"
-        if needs_medicaid
-        else ""
+    clean_dataset = (
+        dataset.strip()
+        if re.fullmatch(r"[A-Za-z0-9_]+", dataset.strip())
+        else "a4i_early_intervention"
     )
-    bil_filter = "\n      AND eval.bilingual_services_listed = TRUE" if needs_bilingual else ""
+    raw_tract = tract_geoid.strip()
+    clean_tract = raw_tract.zfill(11) if re.fullmatch(r"\d{10,11}", raw_tract) else ""
+    raw_state = state_code.strip().upper()
+    clean_state = raw_state if re.fullmatch(r"^[A-Z]{2}$", raw_state) else ""
+    max_bounce = max(0.0, min(float(max_bounce_rate), 1.0))
+
+    where_clauses: list[str] = []
+    if clean_tract:
+        where_clauses.append(f"n.tract_geoid = '{clean_tract}'")
+    if clean_state:
+        where_clauses.append(f"n.state_code = '{clean_state}'")
+    where_clauses.append("eval.node_role IN ('Multidisciplinary_Eval_Hub', 'EI_Therapy_Vendor')")
+    where_clauses.append("eval.part_c_vendor_enrolled = TRUE")
+    if needs_medicaid:
+        where_clauses.append("start.accepts_medicaid = TRUE")
+        where_clauses.append("eval.accepts_medicaid = TRUE")
+    if needs_bilingual:
+        where_clauses.append("eval.bilingual_services_listed = TRUE")
+    where_clauses.append(
+        "NOT EXISTS (\n"
+        "      SELECT 1 FROM UNNEST(hops) AS h\n"
+        "      WHERE h.bounce_flag > 0\n"
+        f"         OR h.pair_bounce_rate > {max_bounce:.4f}\n"
+        "         OR STARTS_WITH(h.handoff_reason, 'Re-Referral Bounce')\n"
+        "    )"
+    )
+    where_sql = "\n    AND ".join(where_clauses)
 
     return f"""-- BigQuery Property Graph (ISO/IEC 39075 GQL) Viable <=45-Day Path Traversal
--- Edge bounce-rate pruning threshold: <= {max_bounce_rate:.2f}
+-- Edge bounce-rate pruning threshold: <= {max_bounce:.4f}
 SELECT *
 FROM GRAPH_TABLE(
-  {dataset}.ReferralGraph
+  {clean_dataset}.ReferralGraph
   MATCH (n:Neighborhood)
         <-[s:SERVES_AREA]-
-        (start:CareNode)
+        (start:CareNode {{node_role: 'Screening_Pediatric_Clinic'}})
         -[hops:REFERS_TO]->{{1,3}}
         (eval:CareNode)
-  WHERE {tract_filter}eval.node_role IN ('Multidisciplinary_Eval_Hub', 'EI_Therapy_Vendor')
-    AND eval.part_c_vendor_enrolled = TRUE{med_filter}{bil_filter}
-    AND NOT EXISTS (
-      SELECT 1 FROM UNNEST(hops) AS h
-      WHERE h.bounce_flag > 0
-         OR STARTS_WITH(h.handoff_reason, 'Re-Referral Bounce')
-    )
+  WHERE {where_sql}
   LET hop_count = ARRAY_LENGTH(hops),
       intake_lag_days = start.median_internal_wait_days,
       handoff_days = (SELECT SUM(h.handoff_wait_days) FROM UNNEST(hops) AS h),
@@ -555,6 +575,14 @@ FROM GRAPH_TABLE(
         start.median_internal_wait_days
         + (SELECT SUM(h.handoff_wait_days) FROM UNNEST(hops) AS h)
         + eval.median_internal_wait_days
+      ),
+      nodes = ARRAY_CONCAT(
+        [start.provider_id],
+        ARRAY(
+          SELECT h.target_provider_id
+          FROM UNNEST(hops) AS h WITH OFFSET AS idx
+          ORDER BY idx
+        )
       )
   FILTER total_expected_days <= 45
   RETURN
@@ -568,9 +596,17 @@ FROM GRAPH_TABLE(
     intake_lag_days,
     handoff_days,
     evaluator_backlog_days,
-    total_expected_days
+    total_expected_days,
+    ROUND(s.travel_distance_km, 2) AS distance_km,
+    eval.accepts_medicaid AS accepts_medicaid,
+    eval.bilingual_services_listed AS bilingual_services_listed,
+    nodes
 )
-ORDER BY total_expected_days ASC
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY start_provider_id, eval_provider_id, hop_count
+  ORDER BY total_expected_days ASC, distance_km ASC
+) = 1
+ORDER BY total_expected_days ASC, distance_km ASC
 LIMIT 10;""".strip()
 
 
@@ -585,14 +621,14 @@ def find_viable_45d_paths(
 ) -> dict[str, Any]:
     """Finds viable <=45-day IDEA Part C referral paths with high-bounce edge pruning.
 
-    Resolves the family's home census tract from a 11-digit GEOID, 5-digit ZIP/county
+    Resolves the family's home census tract from a 10/11-digit GEOID, 4/5-digit ZIP/county
     prefix, or state highest-poverty fallback, executes or mirrors the ISO/IEC 39075 GQL
     `GRAPH_TABLE` traversal over `ReferralGraph`, prunes high-bounce edges, and enforces
     statutory 45-day wait, 36-month aging-out cliff, and zero-vehicle mobility guardrails.
     Never exposes or filters on `audit_*` demographic shares or `limited_english_rate`.
 
     Args:
-        zip_or_tract: 11-digit Census tract GEOID, 5-digit ZIP/county FIPS prefix, or empty
+        zip_or_tract: 10/11-digit Census tract GEOID, 4/5-digit ZIP/county FIPS prefix, or empty
             to select the highest-poverty under-5 tract in the active state.
         languages: Preferred family language (non-English triggers bilingual filter).
         insurance: Coverage type (e.g., 'Medicaid', 'CHIP', 'Private').
@@ -608,6 +644,7 @@ def find_viable_45d_paths(
     logs = frames["logs"]
 
     age_m = max(0, min(int(child_age_months), 35))
+    max_bounce = max(0.0, min(float(max_bounce_rate), 1.0))
     needs_medicaid = "medicaid" in insurance.lower()
     needs_bilingual = languages.strip().lower() not in ("", "english", "en")
 
@@ -616,12 +653,14 @@ def find_viable_45d_paths(
     tract_match = demo.iloc[0:0]
     if raw_loc:
         digits_only = "".join(ch for ch in raw_loc if ch.isdigit())
-        if len(digits_only) == 11:
-            tract_match = demo[demo["census_tract_geoid"] == digits_only]
-        elif len(digits_only) == 5:
-            tract_match = demo[demo["county_fips"] == digits_only]
+        if len(digits_only) in (10, 11):
+            padded_geoid = digits_only.zfill(11)
+            tract_match = demo[demo["census_tract_geoid"] == padded_geoid]
+        elif len(digits_only) in (4, 5):
+            padded_fips = digits_only.zfill(5)
+            tract_match = demo[demo["county_fips"] == padded_fips]
             if tract_match.empty:
-                tract_match = demo[demo["census_tract_geoid"].str.startswith(digits_only)]
+                tract_match = demo[demo["census_tract_geoid"].str.startswith(padded_fips)]
 
     if tract_match.empty:
         tract_row = demo.sort_values(
@@ -655,7 +694,8 @@ def find_viable_45d_paths(
         tract_geoid=home_tract,
         needs_medicaid=needs_medicaid,
         needs_bilingual=needs_bilingual,
-        max_bounce_rate=max_bounce_rate,
+        max_bounce_rate=max_bounce,
+        state_code=cfg["state"],
     )
     bq_rows = graph_client.query_bq_or_none(gql_query)
     engine = (
@@ -681,21 +721,63 @@ def find_viable_45d_paths(
             "total": total_cnt,
             "bounce_count": bounce_cnt,
             "bounce_rate": bounce_rate,
-            "is_high_bounce": bounce_cnt > 0 or bounce_rate > max_bounce_rate,
+            "is_high_bounce": (
+                bounce_cnt > 0 if max_bounce <= 0.0 else bounce_rate > max_bounce
+            ),
             "median_wait_days": med_wait,
         }
 
     pruned_high_bounce_edges_count = sum(1 for v in edge_stats.values() if v["is_high_bounce"])
+    prov_by_id = {str(r["provider_id"]): r for _, r in prov.iterrows()}
 
     viable_paths: list[dict[str, Any]] = []
-    if bq_rows is not None and len(bq_rows) > 0:
+    if bq_rows is not None:
         for row in bq_rows:
             total_days = int(row["total_expected_days"])
             if total_days <= 45:
+                st_id = str(row["start_provider_id"])
+                ev_id = str(row["eval_provider_id"])
+                ev_meta = prov_by_id.get(ev_id)
+
+                if row.get("distance_km") is not None:
+                    dist_km = round(float(row["distance_km"]), 2)
+                elif ev_meta is not None:
+                    dist_km = round(
+                        haversine_km(
+                            home_lat,
+                            home_lon,
+                            float(ev_meta["latitude"]),
+                            float(ev_meta["longitude"]),
+                        ),
+                        2,
+                    )
+                else:
+                    dist_km = 0.0
+
+                if row.get("accepts_medicaid") is not None:
+                    acc_med = bool(row["accepts_medicaid"])
+                elif ev_meta is not None:
+                    acc_med = bool(ev_meta["accepts_medicaid"])
+                else:
+                    acc_med = bool(needs_medicaid)
+
+                if row.get("bilingual_services_listed") is not None:
+                    bil_listed = bool(row["bilingual_services_listed"])
+                elif ev_meta is not None:
+                    bil_listed = bool(ev_meta["bilingual_services_listed"])
+                else:
+                    bil_listed = bool(needs_bilingual)
+
+                raw_nodes = row.get("nodes")
+                if isinstance(raw_nodes, (list, tuple)) and len(raw_nodes) >= 2:
+                    node_list = [str(n_id) for n_id in raw_nodes]
+                else:
+                    node_list = [st_id, ev_id]
+
                 viable_paths.append({
-                    "start_provider_id": str(row["start_provider_id"]),
+                    "start_provider_id": st_id,
                     "start_name": str(row["start_name"]),
-                    "eval_provider_id": str(row["eval_provider_id"]),
+                    "eval_provider_id": ev_id,
                     "eval_name": str(row["eval_name"]),
                     "eval_role": str(row["eval_role"]),
                     "hop_count": int(row["hop_count"]),
@@ -704,18 +786,25 @@ def find_viable_45d_paths(
                     "evaluator_backlog_days": int(row["evaluator_backlog_days"]),
                     "total_expected_days": total_days,
                     "clears_45d_clock": total_days <= 45,
-                    "statutory_45d_headroom_days": 45 - total_days,
+                    "distance_km": dist_km,
+                    "accepts_medicaid": acc_med,
+                    "bilingual_services_listed": bil_listed,
                     "specialty_requested": specialty,
+                    "nodes": node_list,
                 })
     else:
         starts = prov[prov["node_role"] == "Screening_Pediatric_Clinic"].copy()
         if needs_medicaid:
             starts = starts[starts["accepts_medicaid"]]
-        starts["dist_km"] = starts.apply(
-            lambda r: haversine_km(home_lat, home_lon, float(r["latitude"]), float(r["longitude"])),
-            axis=1,
-        )
-        starts = starts.sort_values(["dist_km", "median_internal_wait_days"]).head(3)
+        if not starts.empty:
+            starts["dist_km"] = starts.apply(
+                lambda r: haversine_km(
+                    home_lat, home_lon, float(r["latitude"]), float(r["longitude"])
+                ),
+                axis=1,
+            )
+            starts = starts[starts["dist_km"] <= 80.0]
+            starts = starts.sort_values(["dist_km", "median_internal_wait_days"])
 
         coords = prov[
             (prov["node_role"] == "Part_C_Intake_Coordinator") & (prov["part_c_vendor_enrolled"])
@@ -732,7 +821,6 @@ def find_viable_45d_paths(
             eval_hubs = eval_hubs[eval_hubs["accepts_medicaid"]]
             vendors = vendors[vendors["accepts_medicaid"]]
         if needs_bilingual:
-            coords = coords[coords["bilingual_services_listed"]]
             eval_hubs = eval_hubs[eval_hubs["bilingual_services_listed"]]
             vendors = vendors[vendors["bilingual_services_listed"]]
 
@@ -763,7 +851,7 @@ def find_viable_45d_paths(
                     float(eval_row["latitude"]),
                     float(eval_row["longitude"]),
                 ),
-                1,
+                2,
             )
             viable_paths.append({
                 "start_provider_id": str(start_row["provider_id"]),
@@ -777,7 +865,6 @@ def find_viable_45d_paths(
                 "evaluator_backlog_days": eval_backlog,
                 "total_expected_days": total_days,
                 "clears_45d_clock": True,
-                "statutory_45d_headroom_days": 45 - total_days,
                 "distance_km": dist_km,
                 "accepts_medicaid": bool(eval_row["accepts_medicaid"]),
                 "bilingual_services_listed": bool(eval_row["bilingual_services_listed"]),
@@ -844,19 +931,25 @@ def find_viable_45d_paths(
             ),
         })
 
-    if not has_household_vehicle:
+    top_dist_km = float(viable_paths[0]["distance_km"]) if viable_paths else 0.0
+    if (not has_household_vehicle) or (tract_no_veh_pct >= 10.0 and top_dist_km > 25.0):
         guardrail_alerts.append({
             "code": "ZERO_VEHICLE_MOBILITY_SUPPORT",
             "severity": "MEDIUM",
             "message": (
-                f"Family reports no household vehicle in tract {home_tract} "
-                f"({tract_no_veh_pct}% tract zero-vehicle rate). Authorize Medicaid Non-Emergency "
-                "Medical Transportation (NEMT) or mobile/home-based evaluation to prevent drop-off."
+                f"Home tract {home_tract} has a {tract_no_veh_pct}% zero-vehicle household rate "
+                f"(household vehicle={has_household_vehicle}, top pathway distance={top_dist_km} km). "
+                "Authorize Medicaid Non-Emergency Medical Transportation (NEMT) or mobile/home-based "
+                "evaluation to prevent drop-off."
             ),
         })
 
     return {
         "engine": engine,
+        "synthetic_provenance_notice": (
+            "100% [Synthetic] CareNode providers (SYN-PROV-*) and ReferralGraph edges; "
+            "anchored to real public US Census ACS tracts."
+        ),
         "iso_gql_query": gql_query,
         "query_parameters": {
             "zip_or_tract": zip_or_tract,
@@ -868,7 +961,7 @@ def find_viable_45d_paths(
             "has_household_vehicle": has_household_vehicle,
             "needs_medicaid": needs_medicaid,
             "needs_bilingual": needs_bilingual,
-            "max_bounce_rate": max_bounce_rate,
+            "max_bounce_rate": max_bounce,
         },
         "tract_context": tract_context,
         "viable_paths": viable_paths,
