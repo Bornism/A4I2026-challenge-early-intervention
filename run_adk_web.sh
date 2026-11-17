@@ -28,7 +28,7 @@ echo "Using Vertex AI with Project: $GOOGLE_CLOUD_PROJECT ($GOOGLE_CLOUD_LOCATIO
 export PYTHONPATH="/config/Desktop/AgentsForImpact/.venv/lib/python3.14/site-packages:$DIR:$PYTHONPATH"
 
 echo "Starting ADK Web Server at http://${HOST}:${PORT} with CORS allow_origins=* ..."
-echo "Serving agents from: $DIR/agents"
+echo "Serving agent from: $DIR/agent"
 echo "Press Ctrl+C to terminate."
 
-/config/Desktop/AgentsForImpact/.venv/bin/adk web --host "$HOST" --port "$PORT" --allow_origins="*" "$DIR/agents"
+/config/Desktop/AgentsForImpact/.venv/bin/adk web --host "$HOST" --port "$PORT" --allow_origins="*" "$DIR/agent"
