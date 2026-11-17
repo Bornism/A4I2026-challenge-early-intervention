@@ -494,14 +494,26 @@ function renderGuardrails(brief) {
     return;
   }
 
+  const ALERT_TITLES = {
+    IDEA_PART_C_LEA_TRANSITION_PLANNING_WINDOW:
+      "Part C to Part B Transition Planning Window (34 CFR § 303.209)",
+    IDEA_PART_C_36M_AGING_OUT_CLIFF: "36-Month Aging-Out Cliff Guardrail",
+    IDEA_PART_C_IFSP_EXCEEDS_AGE_3_CUTOFF:
+      "Age-3 Cutoff Statutory Timeline Guardrail",
+    IDEA_PART_C_LESS_THAN_45D_EXEMPTION:
+      "<45 Days to Age 3 Dual Part C / Part B Exemption",
+    IDEA_PART_C_AGE_OUT_PART_B_REDIRECT:
+      "IDEA Part B Section 619 Direct LEA Referral",
+    ZERO_VEHICLE_MOBILITY_SUPPORT: "Zero-Vehicle Mobility Guardrail",
+  };
+
   container.innerHTML = alerts
     .map((a) => {
       const isHigh = String(a.severity || "").toUpperCase() === "HIGH";
       const icon = isHigh ? ICONS.clockAlert : ICONS.mobility;
       const title =
-        a.code === "IDEA_PART_C_36M_AGING_OUT_CLIFF" || isHigh
-          ? "36-Month Aging-Out Cliff Guardrail"
-          : "Zero-Vehicle Mobility Guardrail";
+        ALERT_TITLES[a.code] ||
+        (isHigh ? "Statutory Compliance Guardrail" : "Zero-Vehicle Mobility Guardrail");
       return `
         <div class="guardrail-banner ${isHigh ? "high" : "medium"}">
           <span class="guardrail-icon">${icon}</span>
