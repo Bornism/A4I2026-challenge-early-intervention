@@ -1,39 +1,64 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-type="software">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="page-type" content="software" />
   <title>First Milestones · IDEA Part C Early Intervention Triage &amp; Network Audit</title>
+  <link
+    rel="icon"
+    type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F766E' stroke-width='2.2'%3E%3Cpath d='M22 12h-4l-3 9L9 3l-3 9H2'/%3E%3C/svg%3E"
+  />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Figtree:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <!-- Top Governance & State Header -->
   <header class="topbar">
     <div class="brand-group">
-      <div class="brand-logo" aria-hidden="true">FM</div>
-      <div>
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </svg>
+      </div>
+      <div class="brand-copy">
         <div class="brand-title-row">
           <h1>First Milestones</h1>
           <span class="pill pill-statutory">IDEA Part C · 45-Day Statutory Clock</span>
         </div>
         <p class="brand-subtitle">
-          Early Intervention Triage &amp; Multi-Hop Referral Graph Workbench · Internal State Coordinator View
+          Early Intervention Triage &amp; Multi-Hop Referral Graph Workbench
         </p>
       </div>
     </div>
 
     <div class="header-controls">
-      <div class="synthetic-banner" title="Every provider (SYN-PROV-*), agency (SYN-PARTC-*), and referral chain is 100% synthetic to protect real clinicians.">
-        <span class="dot-amber"></span>
-        <span><strong>100% [Synthetic]</strong> Providers &amp; Logs · <strong>Real</strong> US Census ACS Tracts</span>
+      <div
+        class="synthetic-pill"
+        title="Every provider (SYN-PROV-*), agency (SYN-PARTC-*), and referral chain is 100% synthetic."
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          <path d="M12 8v4" />
+          <path d="M12 16h.01" />
+        </svg>
+        <span>100% [Synthetic] Providers · Real ACS Tracts</span>
       </div>
 
+      <span id="runtimeBadge" class="runtime-badge">MCP + ISO GQL Ready</span>
+
       <label class="state-picker-label" for="stateSelect">
-        <span>State</span>
+        <span class="state-picker-caption">State</span>
         <select id="stateSelect" aria-label="Select Challenge State">
-          <option value="MS" selected>MS — Mississippi (FIPS 28 · Default)</option>
-          <option value="CA">CA — California (FIPS 06 · Leading-Zero)</option>
-          <option value="AL">AL — Alabama (FIPS 01 · Leading-Zero)</option>
+          <option value="MS" selected>MS — Mississippi (FIPS 28)</option>
+          <option value="CA">CA — California (FIPS 06)</option>
+          <option value="AL">AL — Alabama (FIPS 01)</option>
           <option value="GA">GA — Georgia (FIPS 13)</option>
           <option value="TX">TX — Texas (FIPS 48)</option>
           <option value="NY">NY — New York (FIPS 36)</option>
@@ -43,196 +68,483 @@
   </header>
 
   <!-- Split-Pane Coordinator Workbench -->
-  <main class="workbench">
+  <div class="workbench">
     <!-- LEFT PANE: Conversational ADK Coordinator Assistant -->
-    <section class="chat-pane" aria-label="ADK Triage Coordinator Chat">
+    <aside class="copilot-pane" aria-label="ADK Triage Coordinator Chat">
       <div class="pane-header">
-        <div>
-          <h2>Coordinator Assistant</h2>
-          <p id="runtimeStatusText" class="muted-small">Connecting to ADK + BigQuery Property Graph...</p>
+        <div class="pane-title-block">
+          <h2 class="pane-heading">Coordinator Assistant</h2>
+          <span id="engineChip" class="engine-chip">Connecting ADK + Property Graph...</span>
         </div>
-        <span id="mcpBadge" class="pill pill-tech">MCP + ISO GQL</span>
       </div>
 
       <!-- 3 Track Preset Scenario Buttons -->
       <div class="preset-bar">
-        <span class="preset-label">Quick Demo Scenarios:</span>
-        <div class="preset-chips">
-          <button class="chip" data-preset="triage">
-            🧭 Track 1: 32m Autism Triage (Spanish · Medicaid · No Vehicle)
+        <span class="preset-label">Clinical &amp; Network Scenarios</span>
+        <div class="preset-list">
+          <button type="button" class="preset-btn" data-preset="triage">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
+            </svg>
+            <span>Track 1: 32m Autism Triage (Spanish · Medicaid · No Vehicle)</span>
           </button>
-          <button class="chip" data-preset="audit">
-            🕸️ Track 2: Q3 Bounce Hub Audit &amp; Fax-to-EHR Fix
+          <button type="button" class="preset-btn" data-preset="audit">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="18" cy="5" r="3" />
+              <circle cx="6" cy="12" r="3" />
+              <circle cx="18" cy="19" r="3" />
+              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+              <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+            </svg>
+            <span>Track 2: Q3 Bounce Hub Audit &amp; Fax-to-EHR Fix</span>
           </button>
-          <button class="chip" data-preset="outreach">
-            📋 Track 3: Mobile Screening Priority Tracts (&lt;=45d Verified)
+          <button type="button" class="preset-btn" data-preset="outreach">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+              <circle cx="12" cy="10" r="3" />
+            </svg>
+            <span>Track 3: Mobile Screening Priority Tracts (&lt;=45d Verified)</span>
           </button>
         </div>
       </div>
 
       <!-- Chat Message Stream -->
-      <div id="chatMessages" class="chat-messages"></div>
+      <div id="chatMessages" class="chat-messages" aria-live="polite" role="log"></div>
 
       <!-- Chat Composer -->
       <form id="chatForm" class="chat-form">
+        <label class="sr-only" for="chatInput">Enter triage referral or regional audit prompt</label>
         <textarea
           id="chatInput"
           rows="2"
-          placeholder="Ask about a child referral (tract, age in months, Medicaid/Spanish) or regional >45-day bounce hubs..."
+          placeholder="Ask about a tract, child age, Medicaid/Spanish, or bounce hub..."
           required
         ></textarea>
-        <button type="submit" id="sendBtn" class="btn-primary">Run Triage</button>
+        <button type="submit" id="sendBtn" class="btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="22" y1="2" x2="11" y2="13" />
+            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+          </svg>
+          <span>Run Triage</span>
+        </button>
       </form>
-    </section>
+    </aside>
 
-    <!-- RIGHT PANE: Live 45-Day Pathway & Bottleneck Brief -->
-    <section class="brief-pane" aria-label="45-Day Pathway and Bottleneck Brief">
-      <div class="pane-header brief-header">
-        <div>
-          <h2>45-Day Pathway &amp; Bottleneck Brief</h2>
-          <p id="briefScopeSubtitle" class="muted-small">Loading live multi-hop graph diagnostics...</p>
+    <!-- RIGHT PANE: Live 45-Day Pathway & Network Brief -->
+    <main class="triage-workspace" aria-label="45-Day Pathway and Network Brief">
+      <div class="workspace-header">
+        <div class="workspace-title-block">
+          <h2>45-Day Pathway &amp; Network Brief</h2>
+          <p id="contextSubtitle" class="context-subtitle">Loading live multi-hop graph diagnostics...</p>
         </div>
-        <div class="kpi-strip" id="kpiStrip"></div>
+        <div id="kpiStrip" class="kpi-strip"></div>
       </div>
 
-      <div class="brief-scroll">
-        <!-- Guardrail Alerts Banner (36m Aging-Out Cliff & Zero-Vehicle NEMT) -->
+      <!-- Workspace Sub-Tabs & ISO GQL Inspector Trigger -->
+      <div class="workspace-toolbar">
+        <div class="workspace-tabs" role="tablist" aria-label="Brief Views">
+          <button
+            id="tabPathwayBtn"
+            type="button"
+            role="tab"
+            class="workspace-tab active"
+            data-tab="pathway"
+            aria-selected="true"
+            aria-controls="panelPathway"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+            </svg>
+            <span>Pathway &amp; Caregiver</span>
+          </button>
+          <button
+            id="tabHubsBtn"
+            type="button"
+            role="tab"
+            class="workspace-tab"
+            data-tab="hubs"
+            aria-selected="false"
+            aria-controls="panelHubs"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+            </svg>
+            <span>Bottleneck Hubs &amp; Sim</span>
+          </button>
+          <button
+            id="tabOutreachBtn"
+            type="button"
+            role="tab"
+            class="workspace-tab"
+            data-tab="outreach"
+            aria-selected="false"
+            aria-controls="panelOutreach"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            <span>Outreach &amp; Equity</span>
+          </button>
+        </div>
+
+        <button type="button" id="toggleGqlBtn" class="btn-ghost btn-gql">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+          </svg>
+          <span>Inspect ISO GQL</span>
+        </button>
+      </div>
+
+      <!-- TAB PANEL 1: Pathway & Caregiver -->
+      <section id="panelPathway" class="tab-panel" role="tabpanel" aria-labelledby="tabPathwayBtn">
         <div id="guardrailContainer" class="guardrail-stack"></div>
 
-        <!-- CARD 1: Visual Multi-Hop Graph Path Comparator -->
-        <article class="card">
+        <!-- Bounce Path Card -->
+        <article class="card card-breach">
           <div class="card-header">
             <div>
-              <h3>1. Multi-Hop Referral Path Diagnosis vs. &lt;=45-Day Compliant Route</h3>
-              <p class="muted-small">
-                Variable-length <code>-{2,4}-&gt;</code> ISO GQL traversal correlated on <code>case_chain_id</code>
-              </p>
+              <span class="badge badge-breach">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="15" y1="9" x2="9" y2="15" />
+                  <line x1="9" y1="9" x2="15" y2="15" />
+                </svg>
+                Historical Bounce Breach (&gt;45 Days)
+              </span>
+              <h3>Historical Multi-Hop Bounce Diagnosis</h3>
             </div>
-            <button type="button" id="toggleGqlBtn" class="btn-ghost">&lt;/&gt; Inspect ISO GQL</button>
+            <span id="bounceSummaryMeta" class="lane-meta lane-meta-breach"></span>
+          </div>
+          <div id="bouncePathCanvas" class="hop-grid"></div>
+        </article>
+
+        <!-- Recommended Path Card -->
+        <article class="card card-compliant">
+          <div class="card-header">
+            <div>
+              <span class="badge badge-compliant">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                  <polyline points="22 4 12 14.01 9 11.01" />
+                </svg>
+                Recommended &lt;=45-Day Electronic Pathway
+              </span>
+              <h3>Compliant Electronic Referral Route</h3>
+            </div>
+            <span id="recSummaryMeta" class="lane-meta lane-meta-compliant"></span>
           </div>
 
-          <pre id="gqlDrawer" class="code-drawer hidden"></pre>
+          <div id="recPathCanvas" class="hop-grid"></div>
 
-          <!-- Broken Historical 4-Hop Bounce Path -->
-          <div class="path-lane path-lane-breach">
-            <div class="lane-title-row">
-              <span class="badge badge-danger">HISTORICAL 4-HOP BOUNCE BREACH</span>
-              <span id="bounceSummaryMeta" class="lane-meta"></span>
+          <!-- 45-Day Statutory Clock Meter -->
+          <div class="clock-meter-wrap">
+            <div class="clock-meter-labels">
+              <span id="clockDaysLabel">Cumulative Wait: -- / 45 Calendar Days</span>
+              <span id="ageCliffLabel">Projected Age at IFSP: -- months (36m Part C Limit)</span>
             </div>
-            <div id="bouncePathCanvas" class="hop-chain"></div>
-          </div>
-
-          <!-- Recommended <=45-Day Electronic Pathway -->
-          <div class="path-lane path-lane-compliant">
-            <div class="lane-title-row">
-              <span class="badge badge-success">RECOMMENDED &lt;=45-DAY ELECTRONIC PATHWAY</span>
-              <span id="recSummaryMeta" class="lane-meta"></span>
-            </div>
-            <div id="recPathCanvas" class="hop-chain"></div>
-
-            <!-- 45-Day Statutory Clock Progress Bar -->
-            <div class="clock-meter-wrap">
-              <div class="clock-meter-labels">
-                <span id="clockDaysLabel">Cumulative Wait: -- / 45 Calendar Days</span>
-                <span id="ageCliffLabel">Projected Age at IFSP: -- months (36m Part C Limit)</span>
-              </div>
-              <div class="clock-bar-bg">
-                <div id="clockBarFill" class="clock-bar-fill" style="width: 0%"></div>
-                <div class="clock-limit-marker" title="45-Day Federal IDEA Part C Deadline"></div>
-              </div>
+            <div class="clock-bar-bg">
+              <div id="clockBarFill" class="clock-bar-fill" style="width: 0%"></div>
+              <div class="clock-limit-marker" title="45-Day Federal IDEA Part C Deadline"></div>
             </div>
           </div>
         </article>
 
-        <!-- CARD 2: Hidden Bounce Hub & Counterfactual Simulator -->
+        <!-- Viable 45d Paths Card -->
         <article class="card">
           <div class="card-header">
             <div>
-              <h3>2. Regional Bounce Hub Audit &amp; Counterfactual Network Fix</h3>
-              <p class="muted-small">
-                Why flat <code>active_waitlist_count</code> sorting misses upstream <code>paper_fax</code> coordinators
+              <h3>Verified &lt;=45-Day Alternative Pathways</h3>
+              <p class="card-subtitle">
+                ISO GQL <code>-{2,4}-&gt;</code> routes meeting Medicaid, language, and capacity constraints
+              </p>
+            </div>
+          </div>
+          <div id="viablePathsList" class="viable-paths-list"></div>
+        </article>
+
+        <!-- Caregiver Note Card -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>Plain-Language Caregiver Action Note</h3>
+              <p class="card-subtitle">
+                Jargon-free family timeline with Medicaid NEMT &amp; interpreter rights
+              </p>
+            </div>
+            <div class="caregiver-actions">
+              <div class="lang-group" role="group" aria-label="Caregiver note language">
+                <button type="button" data-lang="english" class="lang-btn active">English</button>
+                <button type="button" data-lang="spanish" class="lang-btn">Español</button>
+              </div>
+              <button type="button" id="copyNoteBtn" class="btn-ghost">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+                <span>Copy Note</span>
+              </button>
+            </div>
+          </div>
+          <div id="caregiverNoteBox" class="caregiver-note"></div>
+        </article>
+      </section>
+
+      <!-- TAB PANEL 2: Bottleneck Hubs & Simulator -->
+      <section id="panelHubs" class="tab-panel" role="tabpanel" aria-labelledby="tabHubsBtn" hidden>
+        <div id="auditSummaryStrip" class="audit-summary-strip"></div>
+
+        <!-- Counterfactual Simulator Card -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>Counterfactual Network Fix Simulator</h3>
+              <p class="card-subtitle">
+                Upgrade upstream <code>paper_fax</code> coordinators to <code>ehr_electronic_portal</code> with bilingual/Medicaid slot pre-check
               </p>
             </div>
             <div class="sim-controls">
+              <label class="sr-only" for="simHubSelect">Select Coordinator Hub to Simulate</label>
               <select id="simHubSelect" aria-label="Select Coordinator Hub to Simulate"></select>
-              <button type="button" id="runSimBtn" class="btn-secondary">Simulate EHR + Slot Pre-Check</button>
+              <button id="runSimBtn" type="button" class="btn-primary">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                <span>Simulate EHR + Slot Pre-Check</span>
+              </button>
             </div>
           </div>
 
-          <div class="two-col-grid">
-            <div>
-              <h4 class="subhead">Coordinator Multi-Hop Breach Ranking</h4>
-              <div class="table-wrap">
-                <table class="data-table" id="coordAuditTable">
-                  <thead>
-                    <tr>
-                      <th>Coordinator Hub</th>
-                      <th>Flat Wait</th>
-                      <th>&gt;45d Breaches</th>
-                      <th>Excess Days</th>
-                    </tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </div>
-
-            <div class="sim-impact-box" id="simImpactBox">
-              <!-- Populated dynamically -->
-            </div>
-          </div>
+          <div id="simImpactBox" class="sim-impact-box"></div>
+          <div id="simEpisodeList" class="sim-episode-list"></div>
         </article>
 
-        <!-- CARD 3: Post-Output Equity Audit & Rigor Guardrails -->
+        <!-- Coordinator Audit Ranking Card -->
         <article class="card">
           <div class="card-header">
             <div>
-              <h3>3. Post-Output Equity Audit &amp; Data Rigor Verification</h3>
-              <p class="muted-small">
-                <code>audit_*</code> demographic shares joined strictly <em>after</em> routing · Statewide HRSA NSCH language context
+              <h3>Intake Coordinator Multi-Hop Breach Ranking</h3>
+              <p class="card-subtitle">
+                Why flat <code>active_waitlist_count</code> sorting hides upstream <code>paper_fax</code> bounce hubs
+              </p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="coordAuditTable">
+              <thead>
+                <tr>
+                  <th>Coordinator Hub</th>
+                  <th>Flat Wait</th>
+                  <th>&gt;45d Breaches</th>
+                  <th>Excess Days</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <!-- Downstream Bottleneck Hubs Card -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>Downstream Evaluation &amp; Therapy Bottleneck Hubs</h3>
+              <p class="card-subtitle">
+                Bounce destinations driving cumulative &gt;45-day IDEA Part C delays
+              </p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="bottleneckTable">
+              <thead>
+                <tr>
+                  <th>Provider Hub</th>
+                  <th>Role</th>
+                  <th>Channel / Wait</th>
+                  <th>Bounce Episodes</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- TAB PANEL 3: Outreach & Equity -->
+      <section id="panelOutreach" class="tab-panel" role="tabpanel" aria-labelledby="tabOutreachBtn" hidden>
+        <div id="outreachFormulaBanner" class="formula-banner"></div>
+
+        <!-- Mobile Screening Priority Tracts Card -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>Mobile Developmental Screening Priority Tracts</h3>
+              <p class="card-subtitle">
+                Real US Census ACS under-5 tracts paired with verified &lt;=45-day bilingual downstream capacity
+              </p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="outreachZonesTable">
+              <thead>
+                <tr>
+                  <th>Census Tract</th>
+                  <th>County</th>
+                  <th>Under-5 Pop</th>
+                  <th>Poverty / Zero-Veh</th>
+                  <th>Verified &lt;=45d Pathway</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <!-- Post-Output Equity Audit Card -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>Post-Output Neighborhood Equity Audit</h3>
+              <p class="card-subtitle">
+                <code>audit_*</code> demographic shares joined strictly <em>after</em> routing
               </p>
             </div>
             <span class="badge badge-neutral">Zero Race Inputs in Routing</span>
           </div>
+          <div class="table-wrap">
+            <table class="data-table" id="equityTable">
+              <thead>
+                <tr>
+                  <th>Episode Outcome</th>
+                  <th>Cases</th>
+                  <th>Poverty</th>
+                  <th>Zero-Veh</th>
+                  <th>Black / Hisp / White</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
 
-          <div class="two-col-grid">
+        <!-- Regional Agency & NSCH Context Grid -->
+        <div class="two-col-grid">
+          <article class="card">
+            <div class="card-header">
+              <div>
+                <h3>Regional Part C Agency Performance</h3>
+                <p class="card-subtitle">Timely 45-day IFSP rate by regional agency</p>
+              </div>
+            </div>
             <div class="table-wrap">
-              <table class="data-table" id="equityTable">
+              <table class="data-table" id="agencyKpiTable">
                 <thead>
                   <tr>
-                    <th>Episode Outcome</th>
-                    <th>Cases</th>
-                    <th>Poverty</th>
-                    <th>Zero-Veh</th>
-                    <th>Black / Hisp / White</th>
+                    <th>Agency</th>
+                    <th>Timely 45d IFSP</th>
+                    <th>Evaluated</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
               </table>
             </div>
+          </article>
 
-            <div id="rigorChecklist" class="rigor-box"></div>
-          </div>
-        </article>
+          <article class="card">
+            <div class="card-header">
+              <div>
+                <h3>Statewide HRSA NSCH Screening Context</h3>
+                <p class="card-subtitle">Statewide-only grain (never cross-joined to tracts)</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table" id="nschTable">
+                <thead>
+                  <tr>
+                    <th>Income (FPL)</th>
+                    <th>Home Language</th>
+                    <th>Screening Rate</th>
+                    <th>Follow-Up</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
 
-        <!-- CARD 4: Plain-Language Caregiver Action Note (EN / ES) -->
+        <!-- Data & Graph Rigor Guardrails -->
         <article class="card">
           <div class="card-header">
             <div>
-              <h3>4. Plain-Language Caregiver Action Note</h3>
-              <p class="muted-small">Respectful, jargon-free family timeline with Medicaid NEMT &amp; interpreter rights</p>
-            </div>
-            <div class="tab-group">
-              <button type="button" class="tab-btn active" data-lang="english">English</button>
-              <button type="button" class="tab-btn" data-lang="spanish">Español</button>
-              <button type="button" id="copyNoteBtn" class="btn-ghost">Copy Note</button>
+              <h3>Verified Data &amp; Graph Rigor Guardrails</h3>
+              <p class="card-subtitle">Automated checks on Census grain, ISO GQL correlation, and synthetic boundaries</p>
             </div>
           </div>
-          <div id="caregiverNoteBox" class="caregiver-note"></div>
+          <div id="rigorChecklist" class="rigor-box"></div>
         </article>
+      </section>
+    </main>
+  </div>
+
+  <!-- ISO GQL Inspector Modal -->
+  <div
+    id="gqlModal"
+    class="modal-backdrop"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="gqlModalTitle"
+    hidden
+  >
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+          </svg>
+          <h3 id="gqlModalTitle">ISO GQL Property Graph Queries</h3>
+        </div>
+        <button type="button" id="closeGqlBtn" class="btn-icon" aria-label="Close ISO GQL modal">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
       </div>
-    </section>
-  </main>
+
+      <div class="modal-tabs" role="tablist" aria-label="ISO GQL query tracks">
+        <button type="button" class="modal-tab active" data-gql="routing">
+          Track 1 · Pathway Routing
+        </button>
+        <button type="button" class="modal-tab" data-gql="audit">
+          Track 2 · Bounce Hub Audit
+        </button>
+        <button type="button" class="modal-tab" data-gql="outreach">
+          Track 3 · Outreach Zones
+        </button>
+      </div>
+
+      <pre id="gqlCodeBlock" class="gql-code-block"></pre>
+
+      <div class="modal-footer">
+        <span class="modal-hint">BigQuery Property Graph · Correlated <code>case_chain_id</code></span>
+        <button type="button" id="copyGqlBtn" class="btn-secondary">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          <span>Copy ISO GQL</span>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
