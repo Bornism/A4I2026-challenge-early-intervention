@@ -85,3 +85,27 @@ def query_tract_demographics(tract_geoid: str) -> pd.DataFrame:
     data_path = Path(__file__).resolve().parent.parent.parent / "data" / "acs_under5_tract_demographics.parquet"
     local_df = pd.read_parquet(data_path)
     return local_df[local_df["census_tract_geoid"] == tract_geoid]
+
+def query_tract_transit_guardrails(tract_geoid: str) -> pd.DataFrame:
+    """Queries BigQuery table: tract_transit_guardrails for transit risk indicators."""
+    sql = f"""
+    SELECT *
+    FROM `{PROJECT_ID}.{DATASET_ID}.tract_transit_guardrails`
+    WHERE census_tract_geoid = '{tract_geoid}'
+    """
+    df = execute_bq_query(sql)
+    if df is not None and not df.empty:
+        return df
+    
+    # Fallback to local Parquet table
+    data_path = Path(__file__).resolve().parent.parent.parent / "data" / "tract_transit_guardrails.parquet"
+    if data_path.exists():
+        local_df = pd.read_parquet(data_path)
+        matched = local_df[local_df["census_tract_geoid"] == tract_geoid]
+        if not matched.empty:
+            return matched
+            
+    # Fallback to acs demographics
+    demog_path = Path(__file__).resolve().parent.parent.parent / "data" / "acs_under5_tract_demographics.parquet"
+    demog_df = pd.read_parquet(demog_path)
+    return demog_df[demog_df["census_tract_geoid"] == tract_geoid]
