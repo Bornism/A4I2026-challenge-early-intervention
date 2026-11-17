@@ -1,6 +1,6 @@
 # First Milestones — Technical Architecture & Engineering Changelog
 
-**Branch:** `feat/first-milestones-triage` (`HEAD` `017a2fd`, evolved from starter baseline `46b87a1`)  
+**Branch:** `feat/first-milestones-triage` (pushed through `ef548c2` + doc alignment, evolved from starter baseline `46b87a1`)  
 **Scope:** Multi-agent IDEA Part C Early Intervention triage system built with Google ADK, Gemini 2.5 Pro/Flash, BigQuery Property Graph (ISO/IEC 39075 GQL), Managed MCP / MCP Toolbox, Cloud Firestore / SQLite WAL, and FastAPI + SSE Medical Clean Workbench.
 
 ---
@@ -8,7 +8,7 @@
 ## 1. Executive Summary
 
 ### What Changed on `feat/first-milestones-triage`
-From starter commit `46b87a1` through `017a2fd` (10 commits across 61 modified/added files; `33,348 insertions(+)`, `1,783 deletions(-)`), the repository evolved from an exploratory starter scaffold into a production-deployed, multi-state IDEA Part C triage workbench (`agent/first_milestones/`, `agent/main.py`, `agent/static/`, `scripts/`, `agent/eval/`, `agent/tests/`).
+From starter commit `46b87a1` through `ef548c2` (11 commits across 62 modified/added files; `33,573 insertions(+)`, `1,783 deletions(-)`), the repository evolved from an exploratory starter scaffold into a production-deployed, multi-state IDEA Part C triage workbench (`agent/first_milestones/`, `agent/main.py`, `agent/static/`, `scripts/`, `agent/eval/`, `agent/tests/`). Existing earlier slide/video files (`PITCH_DECK.md`, `DEMO_SCRIPT_3MIN.md`, `pitch_deck.html`, `pitch_deck.pdf`, `first_milestones_demo.mp4`) were intentionally preserved untouched so pre-existing presentation verification gates remain green.
 
 ### Clinical & Policy Problem Solved
 Under **IDEA Part C (`34 CFR § 303.310`)**, states must move a toddler (`0–35` months) from initial developmental referral to an evaluation and **Individualized Family Service Plan (IFSP)** within **45 calendar days**. Flat SQL waitlist sorting (`active_waitlist_count`) routinely misleads administrators by blaming downstream evaluation clinics while missing upstream **"Bounce Hubs"**—`Part_C_Intake_Coordinator` nodes with short internal waits (`5–6` days) whose `paper_fax` handoffs and unverified bilingual/Medicaid routing trigger `3`- to `4`-hop re-referral loops exceeding `45` days (for example, `26/44` = `59.1%` breached chains in `MS`, and `CHAIN-MS-023` taking `75` days before `34`-day electronic rerouting).
@@ -148,7 +148,7 @@ Provisioned in `a4i_early_intervention` (single-state default) and `a4i_early_in
    - **Pydantic Schemas (`schemas.py`):** `_AUDIT_DEMOGRAPHIC_KEY_RE` and `_enforce_no_audit_keys` reject demographic keys outside `post_output_equity_context` (`OutreachZoneRow`); `NschStratum` enforces `geographic_level == "Statewide"` (preventing a 6x tract cross-join fan-out).
    - **HTTP Boundary (`main.py`):** `_reject_audit_keys_http` returns `HTTP 422` if `audit_*` keys appear in intake/gatekeeper inputs.
    - **Tool & SQL Callback (`guardrails.py::guardrail_before_tool_callback`):** Blocks `audit_*` and zero-column `acs_under5_tract_demographics.limited_english_rate` (`0.0` across all tracts) in tool arguments (except `run_post_output_equity_audit`), strips SQL comments (`_strip_sql_comments`), and blocks `_DESTRUCTIVE_SQL_RE`, `_AUDIT_COL_RE` / `_LEP_COL_RE` in `WHERE`/`HAVING`/`ORDER BY`, and `_LEP_WEIGHTING_RE`.
-   - **Model Output Callback (`guardrails.py::guardrail_after_model_callback`):** Flags malformed `SYN-PROV-*` IDs, appends `PROVENANCE_NOTICE` (`100% [Synthetic]` providers/logs vs. real ACS/NSCH/HRSA), and appends the `36-Month IDEA Part C Cutoff Safeguard` for `30–35m` referrals.
+   - **Model Output & Handoff Guardrails (`guardrails.py::guardrail_after_model_callback`, `prompts.py`):** Flags malformed `SYN-PROV-*` IDs, caches valid provider IDs across all 6 starter states via `_get_known_provider_ids()` to replace non-existent/hallucinated `SYN-PROV-*` tokens with `[verified directory lookup required]`, appends `PROVENANCE_NOTICE` (`100% [Synthetic]` providers/logs vs. real ACS/NSCH/HRSA), appends the `36-Month IDEA Part C Cutoff Safeguard` for `30–35m` referrals, and enforces mandatory `network_bottleneck_auditor` → `equity_and_caregiver_specialist` (`transfer_to_agent`) handoffs in `prompts.py`.
 
 ---
 
@@ -159,9 +159,12 @@ Provisioned in `a4i_early_intervention` (single-state default) and `a4i_early_in
 - **5-Dimension Agent Eval Harness (`agent/eval/graders.py`, `agent/eval/golden_evalset.json`):** Grades `20` golden scenarios across (1) Trajectory P/R/F1 & shortcut/equity-audit anti-patterns, (2) Numeric & Entity Faithfulness vs. `OracleContext`, (3) Clinical & Statutory Correctness, (4) 4-Pillar Rigor & Ethics Guardrails, and (5) State Consistency.
 
 ### Checks Executed & Observed
-1. **Full Test Suite (After Final Code & Test Edit):**
+1. **Full Test Suite (After Final Code & Test Edit `1a4366a`):**
    - Command: `A4I_SLOT_LEDGER_DB=/tmp/a4i_pytest_slots.db .venv/bin/pytest agent/tests -v --tb=short`
-   - Observed Result: **`107 passed in 112.16s`** (`0 failed`, `0 skipped`), including all `5/5` tests in `test_six_bugs_and_roi_features.py`, all `9/9` tests in `test_deployment_and_presentation.py`, all `6`-state BigQuery ISO GQL integration tests, SSE + Cytoscape Playwright E2E tests, and Taste-Skill 2.5.1 UI QA (`test_ui_taste_qa_suite`).
+   - Observed Result: **`107 passed in 112.16s`** (`0 failed`, `0 skipped`), including all `5/5` tests in `test_six_bugs_and_roi_features.py`, all `9/9` tests in `test_deployment_and_presentation.py` (with virtualenv `PATH` propagation `017a2fd` and `import os` fix `1a4366a`), all `6`-state BigQuery ISO GQL integration tests, SSE + Cytoscape Playwright E2E tests, and Taste-Skill 2.5.1 UI QA (`test_ui_taste_qa_suite`).
 2. **Live Cloud Run Deployment (`first-milestones-triage-00002-g8p` in `us-central1`):**
    - URLs: `https://first-milestones-triage-591261081648.us-central1.run.app` / `https://first-milestones-triage-tiqjuopayq-uc.a.run.app`
-   - Verified Endpoints (`100%` traffic): `GET /` (`HTTP 200`), `GET /api/health` (`mcp_toolbox` sidecar + 3 Flash sub-agents + SSE + Vertex AI active), `GET /api/brief?state=MS` & `GET /api/brief?state=CA` (`ReferralGraph` ISO GQL, `18` viable 45d paths, `8` bottleneck hubs, `9` BQ telemetry records), `GET /api/geo?state=CA` (`101` TIGER tracts, `30` providers, `304` HRSA BYOD FQHC sites), `GET /api/slots?state=MS` (`30` providers), and `POST /api/gatekeeper` (`readiness_score=90`, bias firewall verified).
+   - Verified Endpoints (`100%` traffic): `GET /` (`HTTP 200`), `GET /api/health` (`mcp_toolbox` sidecar + 3 Flash sub-agents + SSE + Vertex AI active + live `bq_telemetry` job IDs), `GET /api/brief?state=MS` & `GET /api/brief?state=CA` (`ReferralGraph` ISO GQL, `18` viable 45d paths, `8` bottleneck hubs, `9` BQ telemetry records), `GET /api/geo?state=CA` (`101` TIGER tracts, `30` providers, `304` HRSA BYOD FQHC sites), `GET /api/slots?state=MS` (`30` providers), `POST /api/gatekeeper` (`readiness_score=90`, bias firewall verified), and `POST /api/chat` (`HTTP 200`, `gemini-2.5-pro`).
+3. **`frontend3` Cloud Run App (`frontend-3-00002-899`) Integration:**
+   - App URL: `https://frontend-3-591261081648.us-central1.run.app` (`HTTP 200`).
+   - Backend wiring: `ADK_BACKEND_URL=https://first-milestones-triage-ui-591261081648.us-central1.run.app/api/chat` (`first-milestones-triage-ui-00004-2x5` also live with `/api/geo`, `/api/slots`, `/api/gatekeeper` `HTTP 200`), routed via `/api/adk-agent` proxy (`HTTP 200`, translating `{ "prompt": ... }` → `{ "message": ... }`).
