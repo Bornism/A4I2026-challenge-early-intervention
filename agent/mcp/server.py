@@ -170,3 +170,33 @@ def mcp_find_screening_sites(target_county: str = "Bolivar County", require_bili
 )
 def mcp_reserve_slot(case_chain_id: str = "CHAIN-MS-009", provider_id: str = "SYN-PROV-MS-019", child_age_months: int = 20) -> Dict[str, Any]:
     return reserve_evaluation_slot(case_chain_id=case_chain_id, provider_id=provider_id, child_age_months=child_age_months)
+
+# -----------------------------------------------------------------------------
+# Track 2 & Track 3 Tools
+# -----------------------------------------------------------------------------
+from agent.tools.track2_and_3_services import (
+    diagnose_systemic_bottlenecks,
+    run_counterfactual_network_fix,
+    plan_community_screening_season
+)
+
+@mcp.tool(
+    name="audit_systemic_network_bottlenecks",
+    description="[Track 2] Traverses all 3-to-4 hop referral chains to diagnose why regional compliance dropped below 60% and pinpoints deceptive bounce hubs."
+)
+def mcp_diagnose_bottlenecks(state_code: str = "MS") -> Dict[str, Any]:
+    return diagnose_systemic_bottlenecks(state_code=state_code)
+
+@mcp.tool(
+    name="simulate_counterfactual_network_fix",
+    description="[Track 2] Simulates upgrading a paper-fax intake hub to an electronic portal, calculating total delayed child-days saved and compliance uplift."
+)
+def mcp_counterfactual_fix(hub_id: str = "SYN-PROV-MS-009", action: str = "upgrade_to_electronic_portal", state_code: str = "MS") -> Dict[str, Any]:
+    return run_counterfactual_network_fix(hub_id=hub_id, action=action, state_code=state_code)
+
+@mcp.tool(
+    name="plan_community_developmental_screening_season",
+    description="[Track 3] Prioritizes high-poverty, zero-vehicle Census tracts for mobile screening days, verifying downstream <=45-day evaluation capacity."
+)
+def mcp_plan_screening(state_code: str = "MS", max_travel_distance_km: float = 40.0, top_n_tracts: int = 5) -> Dict[str, Any]:
+    return plan_community_screening_season(state_code=state_code, max_travel_distance_km=max_travel_distance_km, top_n_tracts=top_n_tracts)
