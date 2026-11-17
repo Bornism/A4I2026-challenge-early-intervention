@@ -37,6 +37,9 @@ def test_deploy_agent_engine_dry_run_succeeds() -> None:
     syntax = subprocess.run(["bash", "-n", str(DEPLOY_AE_SCRIPT)], capture_output=True, text=True, check=False)
     assert syntax.returncode == 0, f"Bash syntax error: {syntax.stderr}"
 
+    env = os.environ.copy()
+    py_bin_dir = str(Path(sys.executable).resolve().parent)
+    env["PATH"] = f"{py_bin_dir}:{env.get('PATH', '')}"
     res = subprocess.run(
         [
             "bash",
@@ -46,6 +49,7 @@ def test_deploy_agent_engine_dry_run_succeeds() -> None:
             "--region=us-central1",
         ],
         cwd=str(REPO_ROOT),
+        env=env,
         capture_output=True,
         text=True,
         check=False,
