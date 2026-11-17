@@ -140,3 +140,33 @@ def get_idea_part_c_standards() -> str:
 
 if __name__ == "__main__":
     mcp.run()
+
+# -----------------------------------------------------------------------------
+# Advanced Extension Tools
+# -----------------------------------------------------------------------------
+from agent.tools.advanced_extensions import (
+    check_zero_vehicle_transit_feasibility,
+    find_community_screening_sites,
+    reserve_evaluation_slot
+)
+
+@mcp.tool(
+    name="check_transit_accessibility",
+    description="Determines if a zero-vehicle caregiver can reach an evaluation hub by public bus using transit GTFS or if Medicaid Non-Emergency Transportation (NEMT) is required."
+)
+def mcp_check_transit_accessibility(origin_tract_geoid: str = "28011950701", target_hub_id: str = "SYN-PROV-MS-019") -> Dict[str, Any]:
+    return check_zero_vehicle_transit_feasibility(origin_tract_geoid=origin_tract_geoid, target_hub_id=target_hub_id)
+
+@mcp.tool(
+    name="find_head_start_and_wic_screening_sites",
+    description="Locates licensed public Head Start and WIC sites for community screening days where high-poverty, zero-vehicle families gather."
+)
+def mcp_find_screening_sites(target_county: str = "Bolivar County", require_bilingual: bool = True) -> Dict[str, Any]:
+    return find_community_screening_sites(target_county=target_county, require_bilingual=require_bilingual)
+
+@mcp.tool(
+    name="reserve_evaluation_slot",
+    description="Atomically reserves a live multidisciplinary evaluation slot to prevent concurrent coordinators from double-booking capacity."
+)
+def mcp_reserve_slot(case_chain_id: str = "CHAIN-MS-009", provider_id: str = "SYN-PROV-MS-019", child_age_months: int = 20) -> Dict[str, Any]:
+    return reserve_evaluation_slot(case_chain_id=case_chain_id, provider_id=provider_id, child_age_months=child_age_months)
