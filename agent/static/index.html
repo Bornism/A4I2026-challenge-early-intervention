@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>First Milestones · IDEA Part C Early Intervention Triage &amp; Network Audit</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <!-- Top Governance & State Header -->
+  <header class="topbar">
+    <div class="brand-group">
+      <div class="brand-logo" aria-hidden="true">FM</div>
+      <div>
+        <div class="brand-title-row">
+          <h1>First Milestones</h1>
+          <span class="pill pill-statutory">IDEA Part C · 45-Day Statutory Clock</span>
+        </div>
+        <p class="brand-subtitle">
+          Early Intervention Triage &amp; Multi-Hop Referral Graph Workbench · Internal State Coordinator View
+        </p>
+      </div>
+    </div>
+
+    <div class="header-controls">
+      <div class="synthetic-banner" title="Every provider (SYN-PROV-*), agency (SYN-PARTC-*), and referral chain is 100% synthetic to protect real clinicians.">
+        <span class="dot-amber"></span>
+        <span><strong>100% [Synthetic]</strong> Providers &amp; Logs · <strong>Real</strong> US Census ACS Tracts</span>
+      </div>
+
+      <label class="state-picker-label" for="stateSelect">
+        <span>State</span>
+        <select id="stateSelect" aria-label="Select Challenge State">
+          <option value="MS" selected>MS — Mississippi (FIPS 28 · Default)</option>
+          <option value="CA">CA — California (FIPS 06 · Leading-Zero)</option>
+          <option value="AL">AL — Alabama (FIPS 01 · Leading-Zero)</option>
+          <option value="GA">GA — Georgia (FIPS 13)</option>
+          <option value="TX">TX — Texas (FIPS 48)</option>
+          <option value="NY">NY — New York (FIPS 36)</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <!-- Split-Pane Coordinator Workbench -->
+  <main class="workbench">
+    <!-- LEFT PANE: Conversational ADK Coordinator Assistant -->
+    <section class="chat-pane" aria-label="ADK Triage Coordinator Chat">
+      <div class="pane-header">
+        <div>
+          <h2>Coordinator Assistant</h2>
+          <p id="runtimeStatusText" class="muted-small">Connecting to ADK + BigQuery Property Graph...</p>
+        </div>
+        <span id="mcpBadge" class="pill pill-tech">MCP + ISO GQL</span>
+      </div>
+
+      <!-- 3 Track Preset Scenario Buttons -->
+      <div class="preset-bar">
+        <span class="preset-label">Quick Demo Scenarios:</span>
+        <div class="preset-chips">
+          <button class="chip" data-preset="triage">
+            🧭 Track 1: 32m Autism Triage (Spanish · Medicaid · No Vehicle)
+          </button>
+          <button class="chip" data-preset="audit">
+            🕸️ Track 2: Q3 Bounce Hub Audit &amp; Fax-to-EHR Fix
+          </button>
+          <button class="chip" data-preset="outreach">
+            📋 Track 3: Mobile Screening Priority Tracts (&lt;=45d Verified)
+          </button>
+        </div>
+      </div>
+
+      <!-- Chat Message Stream -->
+      <div id="chatMessages" class="chat-messages"></div>
+
+      <!-- Chat Composer -->
+      <form id="chatForm" class="chat-form">
+        <textarea
+          id="chatInput"
+          rows="2"
+          placeholder="Ask about a child referral (tract, age in months, Medicaid/Spanish) or regional >45-day bounce hubs..."
+          required
+        ></textarea>
+        <button type="submit" id="sendBtn" class="btn-primary">Run Triage</button>
+      </form>
+    </section>
+
+    <!-- RIGHT PANE: Live 45-Day Pathway & Bottleneck Brief -->
+    <section class="brief-pane" aria-label="45-Day Pathway and Bottleneck Brief">
+      <div class="pane-header brief-header">
+        <div>
+          <h2>45-Day Pathway &amp; Bottleneck Brief</h2>
+          <p id="briefScopeSubtitle" class="muted-small">Loading live multi-hop graph diagnostics...</p>
+        </div>
+        <div class="kpi-strip" id="kpiStrip"></div>
+      </div>
+
+      <div class="brief-scroll">
+        <!-- Guardrail Alerts Banner (36m Aging-Out Cliff & Zero-Vehicle NEMT) -->
+        <div id="guardrailContainer" class="guardrail-stack"></div>
+
+        <!-- CARD 1: Visual Multi-Hop Graph Path Comparator -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>1. Multi-Hop Referral Path Diagnosis vs. &lt;=45-Day Compliant Route</h3>
+              <p class="muted-small">
+                Variable-length <code>-{2,4}-&gt;</code> ISO GQL traversal correlated on <code>case_chain_id</code>
+              </p>
+            </div>
+            <button type="button" id="toggleGqlBtn" class="btn-ghost">&lt;/&gt; Inspect ISO GQL</button>
+          </div>
+
+          <pre id="gqlDrawer" class="code-drawer hidden"></pre>
+
+          <!-- Broken Historical 4-Hop Bounce Path -->
+          <div class="path-lane path-lane-breach">
+            <div class="lane-title-row">
+              <span class="badge badge-danger">HISTORICAL 4-HOP BOUNCE BREACH</span>
+              <span id="bounceSummaryMeta" class="lane-meta"></span>
+            </div>
+            <div id="bouncePathCanvas" class="hop-chain"></div>
+          </div>
+
+          <!-- Recommended <=45-Day Electronic Pathway -->
+          <div class="path-lane path-lane-compliant">
+            <div class="lane-title-row">
+              <span class="badge badge-success">RECOMMENDED &lt;=45-DAY ELECTRONIC PATHWAY</span>
+              <span id="recSummaryMeta" class="lane-meta"></span>
+            </div>
+            <div id="recPathCanvas" class="hop-chain"></div>
+
+            <!-- 45-Day Statutory Clock Progress Bar -->
+            <div class="clock-meter-wrap">
+              <div class="clock-meter-labels">
+                <span id="clockDaysLabel">Cumulative Wait: -- / 45 Calendar Days</span>
+                <span id="ageCliffLabel">Projected Age at IFSP: -- months (36m Part C Limit)</span>
+              </div>
+              <div class="clock-bar-bg">
+                <div id="clockBarFill" class="clock-bar-fill" style="width: 0%"></div>
+                <div class="clock-limit-marker" title="45-Day Federal IDEA Part C Deadline"></div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- CARD 2: Hidden Bounce Hub & Counterfactual Simulator -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>2. Regional Bounce Hub Audit &amp; Counterfactual Network Fix</h3>
+              <p class="muted-small">
+                Why flat <code>active_waitlist_count</code> sorting misses upstream <code>paper_fax</code> coordinators
+              </p>
+            </div>
+            <div class="sim-controls">
+              <select id="simHubSelect" aria-label="Select Coordinator Hub to Simulate"></select>
+              <button type="button" id="runSimBtn" class="btn-secondary">Simulate EHR + Slot Pre-Check</button>
+            </div>
+          </div>
+
+          <div class="two-col-grid">
+            <div>
+              <h4 class="subhead">Coordinator Multi-Hop Breach Ranking</h4>
+              <div class="table-wrap">
+                <table class="data-table" id="coordAuditTable">
+                  <thead>
+                    <tr>
+                      <th>Coordinator Hub</th>
+                      <th>Flat Wait</th>
+                      <th>&gt;45d Breaches</th>
+                      <th>Excess Days</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="sim-impact-box" id="simImpactBox">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+        </article>
+
+        <!-- CARD 3: Post-Output Equity Audit & Rigor Guardrails -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>3. Post-Output Equity Audit &amp; Data Rigor Verification</h3>
+              <p class="muted-small">
+                <code>audit_*</code> demographic shares joined strictly <em>after</em> routing · Statewide HRSA NSCH language context
+              </p>
+            </div>
+            <span class="badge badge-neutral">Zero Race Inputs in Routing</span>
+          </div>
+
+          <div class="two-col-grid">
+            <div class="table-wrap">
+              <table class="data-table" id="equityTable">
+                <thead>
+                  <tr>
+                    <th>Episode Outcome</th>
+                    <th>Cases</th>
+                    <th>Poverty</th>
+                    <th>Zero-Veh</th>
+                    <th>Black / Hisp / White</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div id="rigorChecklist" class="rigor-box"></div>
+          </div>
+        </article>
+
+        <!-- CARD 4: Plain-Language Caregiver Action Note (EN / ES) -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h3>4. Plain-Language Caregiver Action Note</h3>
+              <p class="muted-small">Respectful, jargon-free family timeline with Medicaid NEMT &amp; interpreter rights</p>
+            </div>
+            <div class="tab-group">
+              <button type="button" class="tab-btn active" data-lang="english">English</button>
+              <button type="button" class="tab-btn" data-lang="spanish">Español</button>
+              <button type="button" id="copyNoteBtn" class="btn-ghost">Copy Note</button>
+            </div>
+          </div>
+          <div id="caregiverNoteBox" class="caregiver-note"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

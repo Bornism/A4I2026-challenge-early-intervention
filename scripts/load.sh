@@ -109,7 +109,7 @@ validate_config() {
 
   [[ "${CMD_TIMEOUT_SEC}" =~ ^[1-9][0-9]{0,3}$ ]] \
     || fail "Invalid A4I_CMD_TIMEOUT_SEC='${CMD_TIMEOUT_SEC}' (expected 1..9999)."
-  [[ "${DATASET}" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,1023}$ ]] \
+  [[ "${DATASET}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && ${#DATASET} -le 1024 ]] \
     || fail "Invalid dataset identifier '${DATASET}'."
   [[ "${LOCATION}" =~ ^[A-Za-z0-9-]+$ ]] \
     || fail "Invalid BigQuery location '${LOCATION}'."
@@ -219,6 +219,10 @@ ensure_graph_reservation() {
          --edition=ENTERPRISE --slots=0 --autoscale_max_slots=50 \
          --ignore_idle_slots=true "${RESERVATION}"; then
     info "created reservation ${RESERVATION} (Enterprise, 0 baseline, autoscale to 50)"
+  elif [[ "${A4I_ALLOW_RESERVATION_FALLBACK:-0}" == "1" ]]; then
+    info "WARNING: could not create reservation ${RESERVATION} (org quota may be full) - continuing without new reservation"
+    echo
+    return 0
   else
     fail "could not create reservation ${RESERVATION}. Graph queries require Enterprise edition; tell a coach."
   fi
