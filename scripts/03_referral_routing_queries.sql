@@ -129,3 +129,30 @@ SELECT
     END AS clinical_action_guidance
 FROM UNNEST([18, 22, 28, 30, 32, 34]) AS child_age_months
 ORDER BY child_age_months DESC;
+
+-- ============================================================================
+-- Query 6: Community Screening Season Outreach Prioritization (Track 3)
+-- Prioritizes census tracts for mobile developmental screening team deployment
+-- at community partner sites (Head Start, WIC centers, and family clinics).
+-- Identifies high-poverty, transit-isolated tracts with high under-5 counts.
+-- ============================================================================
+SELECT
+    d.census_tract_geoid,
+    d.county_name,
+    d.children_under_5_count,
+    ROUND(d.poverty_rate * 100, 1) AS poverty_pct,
+    ROUND(d.no_vehicle_rate * 100, 1) AS no_vehicle_pct,
+    t.distance_km AS nearest_bilingual_hub_km,
+    t.transit_risk_tier,
+    CASE
+        WHEN d.poverty_rate >= 0.30 AND d.no_vehicle_rate >= 0.15 
+            THEN 'Priority 1: Mobile Screening Van at WIC / Head Start Hub'
+        WHEN d.poverty_rate >= 0.20 
+            THEN 'Priority 2: Community Developmental Screening Day'
+        ELSE 'Priority 3: Standard Pediatric Practice Screening'
+    END AS outreach_deployment_tier
+FROM `a4i_early_intervention.acs_under5_tract_demographics` d
+LEFT JOIN `a4i_early_intervention.tract_transit_guardrails` t
+    ON d.census_tract_geoid = t.census_tract_geoid
+ORDER BY d.poverty_rate DESC, d.no_vehicle_rate DESC
+LIMIT 10;
